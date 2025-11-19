@@ -9,7 +9,7 @@ extern fn read(i32 fd, u8* buf, u64 size) -> i64
 
 fn strlen(u8 *str) -> u64 {
   u64 counter = 0
-  while((str as u64) + counter != 0) {
+  while(str + (counter as u8*) != 0 as u8*) {
     counter += 1
   }
   return counter
@@ -17,12 +17,12 @@ fn strlen(u8 *str) -> u64 {
 
 fn strcat(u8 *dst, u8* src) -> u8* {
   while(*dst != 0) {
-    dst += 1
+    dst += 1 as u8*
   }
-  while(src != 0) {
+  while(*src != 0) {
     *dst = *src
-    src += 1
-    dst += 1
+    src += 1 as u8*
+    dst += 1 as u8*
   }
   *dst = 0
   return dst
