@@ -1,0 +1,21 @@
+[package]
+name = "tjlb-rust"
+version = "0.1.0"
+edition = "2021"
+
+[[bin]]
+name = "tjlb-parser"
+path = "src/main.rs"
+
+[lib]
+name = "tjlb_rust"
+path = "src/lib.rs"
+
+[dependencies]
+thiserror = "1.0"
+clap = { version = "4.0", features = ["derive"] }
+inkwell = { version = "0.7.1", features = ["llvm19-1"] }
+
+[dev-dependencies]
+pretty_assertions = "1.0"
+tempfile = "3.0"

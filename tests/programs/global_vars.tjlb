@@ -1,0 +1,13 @@
+# Test global variables
+i32 counter = 100
+
+fn increment() {
+    counter = counter + 1
+}
+
+fn main() -> i32 {
+    increment()
+    increment()
+    increment()
+    return counter  # Should be 103
+}
