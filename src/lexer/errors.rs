@@ -8,10 +8,12 @@ pub struct Position {
 }
 
 impl Position {
+    #[must_use]
     pub fn new(line: usize, column: usize) -> Self {
         Self { line, column }
     }
     
+    #[must_use]
     pub fn start() -> Self {
         Self { line: 1, column: 1 }
     }

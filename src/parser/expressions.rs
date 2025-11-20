@@ -1,6 +1,6 @@
-use crate::lexer::{Token, TokenKind, Keyword, LangType, Position, TypeBase};
+use crate::lexer::{Token, TokenKind, Keyword, LangType, TypeBase};
 use crate::parser::{Expression, ExprKind, BinaryOp, ComparisonOp, LiteralValue, ParserError};
-use crate::symbol::SymbolTable;
+use crate::symbol::table::SymbolTable;
 
 pub struct Parser {
     tokens: Vec<Token>,
@@ -10,6 +10,7 @@ pub struct Parser {
 }
 
 impl Parser {
+    #[must_use]
     pub fn new(tokens: Vec<Token>) -> Self {
         Self {
             tokens,
@@ -20,6 +21,7 @@ impl Parser {
     }
 
     /// Get reference to symbol table
+    #[must_use]
     pub fn symbol_table(&self) -> &SymbolTable {
         &self.symbol_table
     }
@@ -30,6 +32,7 @@ impl Parser {
     }
 
     /// Get string literals
+    #[must_use]
     pub fn take_string_literals(self) -> Vec<String> {
         self.string_literals
     }
@@ -71,8 +74,8 @@ impl Parser {
     }
 
     /// Check if current token is a keyword
-    pub(crate) fn check_keyword(&self, keyword: Keyword) -> bool {
-        matches!(&self.peek().kind, TokenKind::Keyword(k) if k == &keyword)
+    pub(crate) fn check_keyword(&self, keyword: &Keyword) -> bool {
+        matches!(&self.peek().kind, TokenKind::Keyword(k) if k == keyword)
     }
 
     /// Consume a token if it matches the expected kind
@@ -87,8 +90,8 @@ impl Parser {
     }
 
     /// Expect a specific token kind and consume it
-    pub(crate) fn expect(&mut self, kind: TokenKind, message: &str) -> Result<&Token, ParserError> {
-        if self.check(&kind) {
+    pub(crate) fn expect(&mut self, kind: &TokenKind, message: &str) -> Result<&Token, ParserError> {
+        if self.check(kind) {
             Ok(self.advance())
         } else {
             Err(ParserError::ExpectedToken(
@@ -232,7 +235,7 @@ impl Parser {
     fn parse_cast(&mut self) -> Result<Expression, ParserError> {
         let mut expr = self.parse_unary()?;
 
-        while self.check_keyword(Keyword::As) {
+        while self.check_keyword(&Keyword::As) {
             self.advance(); // consume 'as'
 
             let target_type = self.parse_type()?;
@@ -342,22 +345,17 @@ impl Parser {
     fn parse_postfix(&mut self) -> Result<Expression, ParserError> {
         let mut expr = self.parse_primary()?;
 
-        loop {
-            match &self.peek().kind {
-                TokenKind::OpenParen => {
-                    // Function call
-                    self.advance();
-                    expr = self.parse_function_call(expr)?;
-                }
-                _ => break,
-            }
+        while let TokenKind::OpenParen = &self.peek().kind {
+            // Function call
+            self.advance();
+            expr = self.parse_function_call(&expr)?;
         }
 
         Ok(expr)
     }
 
     /// Parse function call (after opening paren)
-    fn parse_function_call(&mut self, callee: Expression) -> Result<Expression, ParserError> {
+    fn parse_function_call(&mut self, callee: &Expression) -> Result<Expression, ParserError> {
         let pos = callee.pos;
 
         // Extract function name
@@ -387,7 +385,7 @@ impl Parser {
             }
         }
 
-        self.expect(TokenKind::CloseParen, ")")?;
+        self.expect(&TokenKind::CloseParen, ")")?;
 
         Ok(Expression::new(
             ExprKind::FunctionCall {
@@ -478,7 +476,7 @@ impl Parser {
             TokenKind::OpenParen => {
                 self.advance();
                 let expr = self.parse_expression()?;
-                self.expect(TokenKind::CloseParen, ")")?;
+                self.expect(&TokenKind::CloseParen, ")")?;
                 Ok(expr)
             }
 
@@ -503,8 +501,10 @@ impl Parser {
     }
 
     /// Parse a complete program
+    /// # Errors
+    /// If parsing fails at any point.
     pub fn parse_program(&mut self) -> Result<crate::parser::Program, ParserError> {
-        use crate::parser::{Program, Function, GlobalVar};
+        use crate::parser::{Program};
 
         let mut functions = Vec::new();
         let mut global_vars = Vec::new();
@@ -513,13 +513,13 @@ impl Parser {
 
         while !self.is_at_end() {
             // Check if this is a function or global variable
-            let is_extern = self.check_keyword(Keyword::Extern);
+            let is_extern = self.check_keyword(&Keyword::Extern);
 
             if is_extern {
                 self.advance(); // consume 'extern'
             }
 
-            if self.check_keyword(Keyword::Fn) {
+            if self.check_keyword(&Keyword::Fn) {
                 // Parse function
                 let func = self.parse_function(is_extern)?;
                 functions.push(func);
@@ -555,11 +555,11 @@ impl Parser {
     /// Parse a function definition
     fn parse_function(&mut self, is_extern: bool) -> Result<crate::parser::Function, ParserError> {
         use crate::parser::{Function, FunctionProto};
-        use crate::symbol::FunctionSymbol;
+        use crate::symbol::table::FunctionSymbol;
 
         let pos = self.peek().pos;
 
-        self.expect(TokenKind::Keyword(Keyword::Fn), "fn")?;
+        self.expect(&TokenKind::Keyword(Keyword::Fn), "fn")?;
 
         // Parse function name
         let name = match &self.peek().kind {
@@ -577,7 +577,7 @@ impl Parser {
             }
         };
 
-        self.expect(TokenKind::OpenParen, "(")?;
+        self.expect(&TokenKind::OpenParen, "(")?;
 
         // Parse parameters
         let mut params = Vec::new();
@@ -609,7 +609,7 @@ impl Parser {
             }
         }
 
-        self.expect(TokenKind::CloseParen, ")")?;
+        self.expect(&TokenKind::CloseParen, ")")?;
 
         // Parse return type (optional, defaults to void)
         let return_type = if self.match_token(&[TokenKind::Arrow]) {

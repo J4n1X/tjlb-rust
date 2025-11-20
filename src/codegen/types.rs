@@ -1,15 +1,24 @@
+use inkwell::AddressSpace;
 use inkwell::context::Context;
-use inkwell::types::{BasicType, BasicTypeEnum, IntType, FloatType};
+use inkwell::types::{BasicTypeEnum, IntType, FloatType};
 use crate::lexer::{LangType, TypeBase};
 use crate::codegen::CodegenError;
 
-/// Convert a LangType to an LLVM type
+/// Convert a `LangType` to an LLVM type
+/// # Errors
+/// Returns `CodegenError::TypeError` if the type is invalid
 pub fn lang_type_to_llvm<'ctx>(
     context: &'ctx Context,
     lang_type: &LangType,
 ) -> Result<BasicTypeEnum<'ctx>, CodegenError> {
+
+    // If it's a pointer, then we just have to make that, LLVM does not differentiate (anymore)
+    if lang_type.pointer_depth > 0 {
+        return Ok(context.ptr_type(AddressSpace::default()).into());
+    }
+
     // Get the base type
-    let base_type: BasicTypeEnum<'ctx> = match lang_type.base {
+    Ok(match lang_type.base {
         TypeBase::SInt => match lang_type.size_bits {
             8 => context.i8_type().into(),
             16 => context.i16_type().into(),
@@ -52,43 +61,40 @@ pub fn lang_type_to_llvm<'ctx>(
                 crate::lexer::Position::new(0, 0),
             ));
         }
-    };
-
-    // Apply pointer depth
-    let mut result_type = base_type;
-    for _ in 0..lang_type.pointer_depth {
-        result_type = result_type.ptr_type(inkwell::AddressSpace::default()).into();
-    }
-
-    Ok(result_type)
+    })
 }
 
 /// Check if a type is void
+#[must_use]
 pub fn is_void_type(lang_type: &LangType) -> bool {
     matches!(lang_type.base, TypeBase::Void) && lang_type.pointer_depth == 0
 }
 
 /// Get LLVM integer type for a given bit width
-pub fn get_int_type<'ctx>(context: &'ctx Context, bits: u32) -> Result<IntType<'ctx>, CodegenError> {
+/// # Errors
+/// Returns `CodegenError::TypeError` if the bit width is invalid
+pub fn get_int_type(context: &'_ Context, bits: u32) -> Result<IntType<'_>, CodegenError> {
     match bits {
         8 => Ok(context.i8_type()),
         16 => Ok(context.i16_type()),
         32 => Ok(context.i32_type()),
         64 => Ok(context.i64_type()),
         _ => Err(CodegenError::TypeError(
-            format!("Invalid integer size: {}", bits),
+            format!("Invalid integer size: {bits}"),
             crate::lexer::Position::new(0, 0),
         )),
     }
 }
 
 /// Get LLVM float type for a given bit width
-pub fn get_float_type<'ctx>(context: &'ctx Context, bits: u32) -> Result<FloatType<'ctx>, CodegenError> {
+/// # Errors
+/// Returns `CodegenError::TypeError` if the bit width is invalid
+pub fn get_float_type(context: &'_ Context, bits: u32) -> Result<FloatType<'_>, CodegenError> {
     match bits {
         32 => Ok(context.f32_type()),
         64 => Ok(context.f64_type()),
         _ => Err(CodegenError::TypeError(
-            format!("Invalid float size: {}", bits),
+            format!("Invalid float size: {bits}"),
             crate::lexer::Position::new(0, 0),
         )),
     }

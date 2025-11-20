@@ -27,7 +27,7 @@ pub struct FunctionSymbol {
 /// Symbol table for managing variables and functions
 #[derive(Debug)]
 pub struct SymbolTable {
-    /// Variable scopes - each scope is a HashMap of name -> Symbol
+    /// Variable scopes - each scope is a `HashMap` of name -> Symbol
     var_scopes: Vec<HashMap<String, VarSymbol>>,
     /// Function table - global scope only
     functions: HashMap<String, FunctionSymbol>,
@@ -35,10 +35,17 @@ pub struct SymbolTable {
     current_scope: usize,
 }
 
+impl Default for SymbolTable {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl SymbolTable {
+    #[must_use]
     pub fn new() -> Self {
         Self {
-            var_scopes: vec![HashMap::new()], // Start with global scope
+            var_scopes: vec![HashMap::new()],
             functions: HashMap::new(),
             current_scope: 0,
         }
@@ -59,6 +66,8 @@ impl SymbolTable {
     }
 
     /// Add a variable to the current scope
+    /// # Errors
+    /// If the variable already exists in the current scope
     pub fn add_variable(&mut self, name: String, symbol_type: LangType, pos: Position) -> Result<(), String> {
         let symbol = VarSymbol {
             name: name.clone(),
@@ -69,7 +78,7 @@ impl SymbolTable {
 
         if let Some(current_scope) = self.var_scopes.last_mut() {
             if current_scope.contains_key(&name) {
-                return Err(format!("Variable '{}' already declared in this scope", name));
+                return Err(format!("Variable '{name}' already declared in this scope"));
             }
             current_scope.insert(name, symbol);
             Ok(())
@@ -79,6 +88,7 @@ impl SymbolTable {
     }
 
     /// Look up a variable in all scopes (from innermost to outermost)
+    #[must_use]
     pub fn lookup_variable(&self, name: &str) -> Option<&VarSymbol> {
         for scope in self.var_scopes.iter().rev() {
             if let Some(symbol) = scope.get(name) {
@@ -89,6 +99,8 @@ impl SymbolTable {
     }
 
     /// Add or update a function
+    /// # Errors
+    /// If there is a conflicting definition
     pub fn add_function(&mut self, func: FunctionSymbol) -> Result<(), String> {
         match self.functions.get(&func.name) {
             Some(existing) if existing.has_body && func.has_body => {
@@ -108,16 +120,19 @@ impl SymbolTable {
     }
 
     /// Look up a function
+    #[must_use]
     pub fn lookup_function(&self, name: &str) -> Option<&FunctionSymbol> {
         self.functions.get(name)
     }
 
     /// Get current scope level
+    #[must_use]
     pub fn current_scope_level(&self) -> usize {
         self.current_scope
     }
 
     /// Get all functions (for final program assembly)
+    #[must_use]
     pub fn get_all_functions(&self) -> Vec<&FunctionSymbol> {
         self.functions.values().collect()
     }

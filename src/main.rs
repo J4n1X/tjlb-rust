@@ -1,7 +1,7 @@
 use clap::{Parser as ClapParser, Subcommand};
 use std::fs;
 use std::path::PathBuf;
-use tjlb_rust::lexer::{tokenize, Token};
+use tjlb_rust::lexer::{tokenize};
 use tjlb_rust::parser::Parser;
 use tjlb_rust::codegen::CodeGenerator;
 use inkwell::context::Context;
@@ -50,19 +50,19 @@ fn main() {
     match cli.command {
         Commands::Lex { file } => {
             if let Err(e) = lex_file(&file) {
-                eprintln!("Error: {}", e);
+                eprintln!("Error: {e}");
                 std::process::exit(1);
             }
         }
         Commands::Parse { file } => {
             if let Err(e) = parse_file(&file) {
-                eprintln!("Error: {}", e);
+                eprintln!("Error: {e}");
                 std::process::exit(1);
             }
         }
         Commands::Compile { file, output, print } => {
             if let Err(e) = compile_file(&file, output.as_deref(), print) {
-                eprintln!("Error: {}", e);
+                eprintln!("Error: {e}");
                 std::process::exit(1);
             }
         }
@@ -116,7 +116,7 @@ fn parse_file(path: &PathBuf) -> Result<(), Box<dyn std::error::Error>> {
     if !program.string_literals.is_empty() {
         println!("String Literals:");
         for (i, s) in program.string_literals.iter().enumerate() {
-            println!("  [{}]: \"{}\"", i, s);
+            println!("  [{i}]: \"{s}\"");
         }
         println!();
     }
@@ -128,7 +128,7 @@ fn parse_file(path: &PathBuf) -> Result<(), Box<dyn std::error::Error>> {
             if i > 0 {
                 print!(", ");
             }
-            print!("{} {}", param_type, param_name);
+            print!("{param_type} {param_name}");
         }
         println!(") -> {}", func.proto.return_type);
 
@@ -139,7 +139,7 @@ fn parse_file(path: &PathBuf) -> Result<(), Box<dyn std::error::Error>> {
             if !func.body.is_empty() {
                 println!("    statements:");
                 for (i, stmt) in func.body.iter().enumerate() {
-                    println!("      [{}]: {:#?}", i, stmt);
+                    println!("      [{i}]: {stmt:#?}");
                 }
             }
         }
@@ -175,12 +175,12 @@ fn compile_file(path: &PathBuf, output: Option<&std::path::Path>, print: bool) -
     if let Some(output_path) = output {
         codegen.write_to_file(output_path)?;
         if print {
-            println!("{}", ir);
+            println!("{ir}");
         } else {
             println!("LLVM IR written to: {}", output_path.display());
         }
     } else {
-        println!("{}", ir);
+        println!("{ir}");
     }
 
     Ok(())

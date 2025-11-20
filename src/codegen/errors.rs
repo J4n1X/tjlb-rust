@@ -16,12 +16,18 @@ pub enum CodegenError {
     #[error("Invalid operation: {0} at {1}")]
     InvalidOperation(String, Position),
 
+    #[error("Unexpected statement at {0}")]
+    UnexpectedStatement(Position),
+
     #[error("LLVM error: {0}")]
-    LLVMError(String),
+    LLVMError(#[from] inkwell::builder::BuilderError),
 
     #[error("Main function not found")]
     MainNotFound,
 
     #[error("Main function must return i32")]
     InvalidMainSignature,
+
+    #[error("Missing return statement in function '{0}' at {1}")]
+    MissingReturn(String, Position),
 }

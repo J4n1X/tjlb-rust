@@ -6,4 +6,9 @@
 | Function Pointers          | Come up with a syntax and implement function pointers                                       | MEDIUM   |
 | Structures                 | Implement structs                                                                           | HIGH     |
 | Indexing                   | Index things by ptr\[offset\]                                                               | HIGH     |
+
+## Done
+
+| Feature                    | Description                                                                                 | Priority |
+|----------------------------|---------------------------------------------------------------------------------------------|----------|
 | Pointer Arithmetic         | Math with pointers, simple as that                                                          | HIGH     |

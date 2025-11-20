@@ -1,16 +1,21 @@
+use inkwell::builder::Builder;
 use inkwell::context::Context;
 use inkwell::module::Module;
-use inkwell::builder::Builder;
-use inkwell::values::{BasicValue, BasicValueEnum, FunctionValue, PointerValue, IntValue};
-use inkwell::types::{BasicTypeEnum, BasicType};
-use inkwell::IntPredicate;
+use inkwell::types::{BasicType, BasicTypeEnum};
+use inkwell::values::{
+    BasicValueEnum, FunctionValue, IntValue, PointerValue,
+};
 use inkwell::AddressSpace;
+use inkwell::IntPredicate;
 use std::collections::HashMap;
 
-use crate::LangType;
-use crate::parser::{Program, Function, GlobalVar, Statement, StatementKind, Expression, ExprKind, BinaryOp, ComparisonOp, LiteralValue};
-use crate::codegen::{CodegenError, lang_type_to_llvm, is_void_type};
+use crate::codegen::{is_void_type, lang_type_to_llvm, CodegenError};
 use crate::lexer::TypeBase;
+use crate::parser::{
+    BinaryOp, ComparisonOp, ExprKind, Expression, Function, GlobalVar, LiteralValue, Program,
+    Statement, StatementKind,
+};
+use crate::parser::LangType;
 
 pub struct CodeGenerator<'ctx> {
     context: &'ctx Context,
@@ -32,6 +37,7 @@ pub struct CodeGenerator<'ctx> {
 }
 
 impl<'ctx> CodeGenerator<'ctx> {
+    #[must_use]
     pub fn new(context: &'ctx Context, module_name: &str) -> Self {
         let module = context.create_module(module_name);
         let builder = context.create_builder();
@@ -48,10 +54,12 @@ impl<'ctx> CodeGenerator<'ctx> {
     }
 
     /// Generate LLVM IR from a program
+    /// # Errors
+    /// Returns `CodegenError` if any of the nested functions fail
     pub fn generate(&mut self, program: &Program) -> Result<(), CodegenError> {
         // Generate global string literals first (they might be referenced by globals)
         for (i, s) in program.string_literals.iter().enumerate() {
-            self.generate_string_literal(i, s)?;
+            self.generate_string_literal(i, s);
         }
 
         // First pass: Declare all functions (for forward references)
@@ -77,7 +85,9 @@ impl<'ctx> CodeGenerator<'ctx> {
     /// Declare a function (without body)
     fn declare_function(&mut self, func: &Function) -> Result<FunctionValue<'ctx>, CodegenError> {
         // Convert parameter types
-        let param_types: Result<Vec<_>, _> = func.proto.params
+        let param_types: Result<Vec<_>, _> = func
+            .proto
+            .params
             .iter()
             .map(|(ty, _)| lang_type_to_llvm(self.context, ty))
             .collect();
@@ -104,7 +114,10 @@ impl<'ctx> CodeGenerator<'ctx> {
 
         // Set parameter names
         for (i, (_, param_name)) in func.proto.params.iter().enumerate() {
-            function.get_nth_param(i as u32).unwrap().set_name(param_name);
+            function
+                .get_nth_param(u32::try_from(i).expect("Parameter index out of bounds"))
+                .unwrap()
+                .set_name(param_name);
         }
 
         self.functions.insert(func.proto.name.clone(), function);
@@ -113,8 +126,9 @@ impl<'ctx> CodeGenerator<'ctx> {
 
     /// Generate a function with its body
     fn generate_function(&mut self, func: &Function) -> Result<(), CodegenError> {
-        let function = *self.functions.get(&func.proto.name)
-            .ok_or_else(|| CodegenError::UndefinedFunction(func.proto.name.clone(), func.proto.pos))?;
+        let function = *self.functions.get(&func.proto.name).ok_or_else(|| {
+            CodegenError::UndefinedFunction(func.proto.name.clone(), func.proto.pos)
+        })?;
 
         self.current_function = Some(function);
 
@@ -127,16 +141,19 @@ impl<'ctx> CodeGenerator<'ctx> {
 
         // Allocate space for parameters and store them
         for (i, (param_type, param_name)) in func.proto.params.iter().enumerate() {
-            let param_value = function.get_nth_param(i as u32).unwrap();
+            let param_value = function.get_nth_param(u32::try_from(i).expect("Parameter index out of bounds")).unwrap();
             let param_llvm_type = lang_type_to_llvm(self.context, param_type)?;
 
             // Allocate stack space for parameter
-            let alloca = self.builder.build_alloca(param_llvm_type, param_name)
-                .map_err(|e| CodegenError::LLVMError(e.to_string()))?;
+            let alloca = self
+                .builder
+                .build_alloca(param_llvm_type, param_name)
+                ?;
 
             // Store parameter value
-            self.builder.build_store(alloca, param_value)
-                .map_err(|e| CodegenError::LLVMError(e.to_string()))?;
+            self.builder
+                .build_store(alloca, param_value)
+                ?;
 
             // Add to variables
             self.add_variable(param_name.clone(), alloca);
@@ -150,13 +167,15 @@ impl<'ctx> CodeGenerator<'ctx> {
         // If function doesn't have an explicit return, add one
         if !self.block_has_terminator() {
             if is_void_type(&func.proto.return_type) {
-                self.builder.build_return(None)
-                    .map_err(|e| CodegenError::LLVMError(e.to_string()))?;
+                self.builder
+                    .build_return(None)
+                    ?;
             } else {
                 // Return a zero value for non-void functions without explicit return
                 let zero = self.get_zero_value(&func.proto.return_type)?;
-                self.builder.build_return(Some(&zero))
-                    .map_err(|e| CodegenError::LLVMError(e.to_string()))?;
+                self.builder
+                    .build_return(Some(&zero))
+                    ?;
             }
         }
 
@@ -171,7 +190,9 @@ impl<'ctx> CodeGenerator<'ctx> {
     fn generate_global_variable(&mut self, global: &GlobalVar) -> Result<(), CodegenError> {
         let global_type = lang_type_to_llvm(self.context, &global.var_type)?;
 
-        let global_var = self.module.add_global(global_type, Some(AddressSpace::default()), &global.name);
+        let global_var =
+            self.module
+                .add_global(global_type, Some(AddressSpace::default()), &global.name);
 
         // Set initializer
         if let Some(init_expr) = &global.initializer {
@@ -184,21 +205,26 @@ impl<'ctx> CodeGenerator<'ctx> {
             global_var.set_initializer(&global_type.const_zero());
         }
 
-        self.global_variables.insert(global.name.clone(), global_var.as_pointer_value());
+        self.global_variables
+            .insert(global.name.clone(), global_var.as_pointer_value());
         Ok(())
     }
 
     /// Generate a string literal
-    fn generate_string_literal(&mut self, index: usize, value: &str) -> Result<(), CodegenError> {
-        let string_name = format!(".str.{}", index);
+    fn generate_string_literal(&mut self, index: usize, value: &str) {
+        let string_name = format!(".str.{index}");
         let string_value = self.context.const_string(value.as_bytes(), true);
-        let global_string = self.module.add_global(string_value.get_type(), Some(AddressSpace::default()), &string_name);
+        let global_string = self.module.add_global(
+            string_value.get_type(),
+            Some(AddressSpace::default()),
+            &string_name,
+        );
         global_string.set_initializer(&string_value);
         global_string.set_constant(true);
 
         // Store in global variables with special naming
-        self.global_variables.insert(string_name, global_string.as_pointer_value());
-        Ok(())
+        self.global_variables
+            .insert(string_name, global_string.as_pointer_value());
     }
 
     /// Generate code for a statement
@@ -207,35 +233,40 @@ impl<'ctx> CodeGenerator<'ctx> {
             StatementKind::Expression(expr) => {
                 // For expression statements, we might have void function calls
                 // Handle them specially
-                match &expr.kind {
-                    ExprKind::FunctionCall { name, args } => {
-                        self.generate_function_call_statement(name, args, expr.pos)?;
-                        Ok(())
-                    }
-                    _ => {
-                        self.generate_expression(expr)?;
-                        Ok(())
-                    }
+                if let ExprKind::FunctionCall { name, args } = &expr.kind {
+                    self.generate_function_call_statement(name, args, expr.pos)?;
+                    Ok(())
+                } else {
+                    self.generate_expression(expr)?;
+                    Ok(())
                 }
             }
 
-            StatementKind::VarDecl { var_type, name, initializer } => {
+            StatementKind::VarDecl {
+                var_type,
+                name,
+                initializer,
+            } => {
                 let llvm_type = lang_type_to_llvm(self.context, var_type)?;
 
                 // Allocate stack space
-                let alloca = self.builder.build_alloca(llvm_type, name)
-                    .map_err(|e| CodegenError::LLVMError(e.to_string()))?;
+                let alloca = self
+                    .builder
+                    .build_alloca(llvm_type, name)
+                    ?;
 
                 // Initialize if provided
                 if let Some(init_expr) = initializer {
                     let init_value = self.generate_expression(init_expr)?;
-                    self.builder.build_store(alloca, init_value)
-                        .map_err(|e| CodegenError::LLVMError(e.to_string()))?;
+                    self.builder
+                        .build_store(alloca, init_value)
+                        ?;
                 } else {
                     // Initialize to zero
                     let zero = llvm_type.const_zero();
-                    self.builder.build_store(alloca, zero)
-                        .map_err(|e| CodegenError::LLVMError(e.to_string()))?;
+                    self.builder
+                        .build_store(alloca, zero)
+                        ?;
                 }
 
                 self.add_variable(name.clone(), alloca);
@@ -243,13 +274,15 @@ impl<'ctx> CodeGenerator<'ctx> {
             }
 
             StatementKind::VarAssign { name, value } => {
-                let var_ptr = self.lookup_variable(name)
+                let var_ptr = self
+                    .lookup_variable(name)
                     .ok_or_else(|| CodegenError::UndefinedVariable(name.clone(), stmt.pos))?;
 
                 let value_llvm = self.generate_expression(value)?;
 
-                self.builder.build_store(var_ptr, value_llvm)
-                    .map_err(|e| CodegenError::LLVMError(e.to_string()))?;
+                self.builder
+                    .build_store(var_ptr, value_llvm)
+                    ?;
 
                 Ok(())
             }
@@ -265,32 +298,36 @@ impl<'ctx> CodeGenerator<'ctx> {
                         let value_llvm = self.generate_expression(value)?;
 
                         // Store the value at the dereferenced location
-                        self.builder.build_store(ptr.into_pointer_value(), value_llvm)
-                            .map_err(|e| CodegenError::LLVMError(e.to_string()))?;
+                        self.builder
+                            .build_store(ptr.into_pointer_value(), value_llvm)?;
 
                         Ok(())
                     }
                     _ => Err(CodegenError::InvalidOperation(
                         "DerefAssign target must be a dereference expression".to_string(),
                         target.pos,
-                    ))
+                    )),
                 }
             }
 
             StatementKind::Return(expr) => {
                 if let Some(expr) = expr {
                     let value = self.generate_expression(expr)?;
-                    self.builder.build_return(Some(&value))
-                        .map_err(|e| CodegenError::LLVMError(e.to_string()))?;
+                    self.builder
+                        .build_return(Some(&value))?;
                 } else {
-                    self.builder.build_return(None)
-                        .map_err(|e| CodegenError::LLVMError(e.to_string()))?;
+                    self.builder
+                        .build_return(None)?;
                 }
                 Ok(())
             }
 
-            StatementKind::If { condition, then_block, else_block } => {
-                self.generate_if_statement(condition, then_block, else_block)?;
+            StatementKind::If {
+                condition,
+                then_block,
+                else_block,
+            } => {
+                self.generate_if_statement(condition, then_block, else_block.as_ref().map(Vec::as_slice))?;
                 Ok(())
             }
 
@@ -299,8 +336,13 @@ impl<'ctx> CodeGenerator<'ctx> {
                 Ok(())
             }
 
-            StatementKind::For { init, condition, increment, body } => {
-                self.generate_for_loop(init, condition, increment, body)?;
+            StatementKind::For {
+                init,
+                condition,
+                increment,
+                body,
+            } => {
+                self.generate_for_loop(init.clone(), condition.as_ref(), increment.clone(), body)?;
                 Ok(())
             }
 
@@ -320,10 +362,11 @@ impl<'ctx> CodeGenerator<'ctx> {
         &mut self,
         condition: &Expression,
         then_block: &[Statement],
-        else_block: &Option<Vec<Statement>>,
+        else_block: Option<&[Statement]>,
     ) -> Result<(), CodegenError> {
-        let function = self.current_function
-            .ok_or_else(|| CodegenError::LLVMError("No current function".to_string()))?;
+        let function = self
+            .current_function
+            .ok_or(CodegenError::UnexpectedStatement(condition.pos))?;
 
         // Generate condition
         let cond_value = self.generate_expression(condition)?;
@@ -334,8 +377,9 @@ impl<'ctx> CodeGenerator<'ctx> {
         let merge_bb = self.context.append_basic_block(function, "ifcont");
 
         // Branch on condition
-        self.builder.build_conditional_branch(cond_int, then_bb, else_bb)
-            .map_err(|e| CodegenError::LLVMError(e.to_string()))?;
+        self.builder
+            .build_conditional_branch(cond_int, then_bb, else_bb)
+            ?;
 
         // Generate then block
         self.builder.position_at_end(then_bb);
@@ -343,8 +387,9 @@ impl<'ctx> CodeGenerator<'ctx> {
             self.generate_statement(stmt)?;
         }
         if !self.block_has_terminator() {
-            self.builder.build_unconditional_branch(merge_bb)
-                .map_err(|e| CodegenError::LLVMError(e.to_string()))?;
+            self.builder
+                .build_unconditional_branch(merge_bb)
+                ?;
         }
 
         // Generate else block
@@ -355,8 +400,9 @@ impl<'ctx> CodeGenerator<'ctx> {
             }
         }
         if !self.block_has_terminator() {
-            self.builder.build_unconditional_branch(merge_bb)
-                .map_err(|e| CodegenError::LLVMError(e.to_string()))?;
+            self.builder
+                .build_unconditional_branch(merge_bb)
+                ?;
         }
 
         // Continue at merge block
@@ -366,24 +412,31 @@ impl<'ctx> CodeGenerator<'ctx> {
     }
 
     /// Generate a while loop
-    fn generate_while_loop(&mut self, condition: &Expression, body: &[Statement]) -> Result<(), CodegenError> {
-        let function = self.current_function
-            .ok_or_else(|| CodegenError::LLVMError("No current function".to_string()))?;
+    fn generate_while_loop(
+        &mut self,
+        condition: &Expression,
+        body: &[Statement],
+    ) -> Result<(), CodegenError> {
+        let function = self
+            .current_function
+            .ok_or(CodegenError::UnexpectedStatement(condition.pos))?;
 
         let cond_bb = self.context.append_basic_block(function, "while.cond");
         let body_bb = self.context.append_basic_block(function, "while.body");
         let end_bb = self.context.append_basic_block(function, "while.end");
 
         // Jump to condition
-        self.builder.build_unconditional_branch(cond_bb)
-            .map_err(|e| CodegenError::LLVMError(e.to_string()))?;
+        self.builder
+            .build_unconditional_branch(cond_bb)
+            ?;
 
         // Generate condition
         self.builder.position_at_end(cond_bb);
         let cond_value = self.generate_expression(condition)?;
         let cond_int = self.value_to_bool(cond_value)?;
-        self.builder.build_conditional_branch(cond_int, body_bb, end_bb)
-            .map_err(|e| CodegenError::LLVMError(e.to_string()))?;
+        self.builder
+            .build_conditional_branch(cond_int, body_bb, end_bb)
+            ?;
 
         // Generate body
         self.builder.position_at_end(body_bb);
@@ -391,8 +444,9 @@ impl<'ctx> CodeGenerator<'ctx> {
             self.generate_statement(stmt)?;
         }
         if !self.block_has_terminator() {
-            self.builder.build_unconditional_branch(cond_bb)
-                .map_err(|e| CodegenError::LLVMError(e.to_string()))?;
+            self.builder
+                .build_unconditional_branch(cond_bb)
+                ?;
         }
 
         // Continue after loop
@@ -404,20 +458,21 @@ impl<'ctx> CodeGenerator<'ctx> {
     /// Generate a for loop
     fn generate_for_loop(
         &mut self,
-        init: &Option<Box<Statement>>,
-        condition: &Option<Expression>,
-        increment: &Option<Box<Statement>>,
+        init: Option<Box<Statement>>,
+        condition: Option<&Expression>,
+        increment: Option<Box<Statement>>,
         body: &[Statement],
     ) -> Result<(), CodegenError> {
-        let function = self.current_function
-            .ok_or_else(|| CodegenError::LLVMError("No current function".to_string()))?;
+        let function = self
+            .current_function
+            .ok_or_else(|| CodegenError::UnexpectedStatement(body[0].pos))?;
 
         // Enter scope for loop variable
         self.enter_scope();
 
         // Generate init
         if let Some(init_stmt) = init {
-            self.generate_statement(init_stmt)?;
+            self.generate_statement(&init_stmt)?;
         }
 
         let cond_bb = self.context.append_basic_block(function, "for.cond");
@@ -426,8 +481,9 @@ impl<'ctx> CodeGenerator<'ctx> {
         let end_bb = self.context.append_basic_block(function, "for.end");
 
         // Jump to condition
-        self.builder.build_unconditional_branch(cond_bb)
-            .map_err(|e| CodegenError::LLVMError(e.to_string()))?;
+        self.builder
+            .build_unconditional_branch(cond_bb)
+            ?;
 
         // Generate condition
         self.builder.position_at_end(cond_bb);
@@ -438,8 +494,9 @@ impl<'ctx> CodeGenerator<'ctx> {
             // No condition means infinite loop (true)
             self.context.bool_type().const_all_ones()
         };
-        self.builder.build_conditional_branch(cond_value, body_bb, end_bb)
-            .map_err(|e| CodegenError::LLVMError(e.to_string()))?;
+        self.builder
+            .build_conditional_branch(cond_value, body_bb, end_bb)
+            ?;
 
         // Generate body
         self.builder.position_at_end(body_bb);
@@ -447,17 +504,19 @@ impl<'ctx> CodeGenerator<'ctx> {
             self.generate_statement(stmt)?;
         }
         if !self.block_has_terminator() {
-            self.builder.build_unconditional_branch(inc_bb)
-                .map_err(|e| CodegenError::LLVMError(e.to_string()))?;
+            self.builder
+                .build_unconditional_branch(inc_bb)
+                ?;
         }
 
         // Generate increment
         self.builder.position_at_end(inc_bb);
         if let Some(inc_stmt) = increment {
-            self.generate_statement(inc_stmt)?;
+            self.generate_statement(&inc_stmt)?;
         }
-        self.builder.build_unconditional_branch(cond_bb)
-            .map_err(|e| CodegenError::LLVMError(e.to_string()))?;
+        self.builder
+            .build_unconditional_branch(cond_bb)
+            ?;
 
         // Continue after loop
         self.builder.position_at_end(end_bb);
@@ -469,34 +528,35 @@ impl<'ctx> CodeGenerator<'ctx> {
     }
 
     /// Generate code for an expression
-    fn generate_expression(&mut self, expr: &Expression) -> Result<BasicValueEnum<'ctx>, CodegenError> {
+    fn generate_expression(
+        &mut self,
+        expr: &Expression,
+    ) -> Result<BasicValueEnum<'ctx>, CodegenError> {
         match &expr.kind {
             ExprKind::Literal(lit) => self.generate_literal(lit, &expr.expr_type),
 
             ExprKind::Variable(name) => {
-                let var_ptr = self.lookup_variable(name)
+                let var_ptr = self
+                    .lookup_variable(name)
                     .ok_or_else(|| CodegenError::UndefinedVariable(name.clone(), expr.pos))?;
 
                 let var_type = lang_type_to_llvm(self.context, &expr.expr_type)?;
 
-                self.builder.build_load(var_type, var_ptr, name)
-                    .map_err(|e| CodegenError::LLVMError(e.to_string()))
+                Ok(self.builder
+                    .build_load(var_type, var_ptr, name)?)
             }
 
-            ExprKind::Binary { left, op, right } => {
-                self.generate_binary_op(left, op, right)
-            }
+            ExprKind::Binary { left, op, right } => self.generate_binary_op(left, op, right),
 
-            ExprKind::Comparison { left, op, right } => {
-                self.generate_comparison(left, op, right)
-            }
+            ExprKind::Comparison { left, op, right } => self.generate_comparison(left, op, right),
 
             ExprKind::Reference(expr) => {
                 // Get the address of the expression
                 match &expr.kind {
                     ExprKind::Variable(name) => {
-                        let var_ptr = self.lookup_variable(name)
-                            .ok_or_else(|| CodegenError::UndefinedVariable(name.clone(), expr.pos))?;
+                        let var_ptr = self.lookup_variable(name).ok_or_else(|| {
+                            CodegenError::UndefinedVariable(name.clone(), expr.pos)
+                        })?;
                         Ok(var_ptr.into())
                     }
                     ExprKind::Dereference(inner) => {
@@ -506,7 +566,7 @@ impl<'ctx> CodeGenerator<'ctx> {
                     _ => Err(CodegenError::InvalidOperation(
                         "Cannot take address of non-lvalue".to_string(),
                         expr.pos,
-                    ))
+                    )),
                 }
             }
 
@@ -528,22 +588,25 @@ impl<'ctx> CodeGenerator<'ctx> {
                     }
                 };
                 let pointee_type = lang_type_to_llvm(self.context, &derefed_type)?;
-                self.builder.build_load(pointee_type, ptr.into_pointer_value(), "deref")
-                    .map_err(|e| CodegenError::LLVMError(e.to_string()))
+                Ok(self.builder
+                    .build_load(pointee_type, ptr.into_pointer_value(), "deref")?)
             }
 
             ExprKind::FunctionCall { name, args } => {
                 self.generate_function_call(name, args, expr.pos)
             }
 
-            ExprKind::Cast { expr, target_type } => {
-                self.generate_cast(expr, target_type)
-            }
+            ExprKind::Cast { expr, target_type } => self.generate_cast(expr, target_type),
         }
     }
 
     /// Generate a literal value
-    fn generate_literal(&self, lit: &LiteralValue, ty: &crate::lexer::LangType) -> Result<BasicValueEnum<'ctx>, CodegenError> {
+    #[allow(clippy::cast_sign_loss)]
+    fn generate_literal(
+        &self,
+        lit: &LiteralValue,
+        ty: &crate::lexer::LangType,
+    ) -> Result<BasicValueEnum<'ctx>, CodegenError> {
         match lit {
             LiteralValue::Integer(val) => {
                 let llvm_type = lang_type_to_llvm(self.context, ty)?;
@@ -554,141 +617,212 @@ impl<'ctx> CodeGenerator<'ctx> {
                     _ => Err(CodegenError::TypeError(
                         "Integer literal must have integer type".to_string(),
                         crate::lexer::Position::new(0, 0),
-                    ))
+                    )),
                 }
             }
 
             LiteralValue::Float(val) => {
                 let llvm_type = lang_type_to_llvm(self.context, ty)?;
                 match llvm_type {
-                    BasicTypeEnum::FloatType(float_ty) => {
-                        Ok(float_ty.const_float(*val).into())
-                    }
+                    BasicTypeEnum::FloatType(float_ty) => Ok(float_ty.const_float(*val).into()),
                     _ => Err(CodegenError::TypeError(
                         "Float literal must have float type".to_string(),
                         crate::lexer::Position::new(0, 0),
-                    ))
+                    )),
                 }
             }
 
             LiteralValue::String(index) => {
                 // Look up the string global
-                let string_name = format!(".str.{}", index);
+                let string_name = format!(".str.{index}");
                 let global_ptr = self.global_variables.get(&string_name)
-                    .ok_or_else(|| CodegenError::LLVMError(format!("String literal {} not found", index)))?;
+                    .expect("Internal error: String literal global not found");
 
                 // Cast to i8*
-                let i8_ptr_type = self.context.i8_type().ptr_type(AddressSpace::default());
-                let casted = self.builder.build_pointer_cast(*global_ptr, i8_ptr_type, "str")
-                    .map_err(|e| CodegenError::LLVMError(e.to_string()))?;
+                let i8_ptr_type = self.context.ptr_type(AddressSpace::default());
+                let casted = self
+                    .builder
+                    .build_pointer_cast(*global_ptr, i8_ptr_type, "str")
+                    ?;
 
                 Ok(casted.into())
             }
         }
     }
 
-    /// Generate a binary operation
-    fn generate_binary_op(&mut self, left: &Expression, op: &BinaryOp, right: &Expression) -> Result<BasicValueEnum<'ctx>, CodegenError> {
-        let left_val = self.generate_expression(left)?;
-        let right_val = self.generate_expression(right)?;
-
-        // Determine if we're working with floats or ints
-        let is_float = matches!(left.expr_type.base, TypeBase::SFloat);
-        let is_pointer = left.expr_type.pointer_depth > 0 || right.expr_type.pointer_depth > 0;
-
-        if is_float {
-            let left_float = left_val.into_float_value();
-            let right_float = right_val.into_float_value();
-
-            match op {
-                BinaryOp::Add => self.builder.build_float_add(left_float, right_float, "fadd")
-                    .map(|v| v.into())
-                    .map_err(|e| CodegenError::LLVMError(e.to_string())),
-                BinaryOp::Sub => self.builder.build_float_sub(left_float, right_float, "fsub")
-                    .map(|v| v.into())
-                    .map_err(|e| CodegenError::LLVMError(e.to_string())),
-                BinaryOp::Mul => self.builder.build_float_mul(left_float, right_float, "fmul")
-                    .map(|v| v.into())
-                    .map_err(|e| CodegenError::LLVMError(e.to_string())),
-                BinaryOp::Div => self.builder.build_float_div(left_float, right_float, "fdiv")
-                    .map(|v| v.into())
-                    .map_err(|e| CodegenError::LLVMError(e.to_string())),
-                _ => Err(CodegenError::InvalidOperation(
-                    format!("Operator {:?} not supported for floats", op),
-                    left.pos,
-                ))
+    fn generate_int_binary_op(
+        &mut self,
+        left: &Expression,
+        op: &BinaryOp,
+        right: &Expression,
+    ) -> Result<BasicValueEnum<'ctx>, CodegenError> {
+        let is_signed = matches!(left.expr_type.base, TypeBase::SInt);
+        let left_int = self.generate_expression(left)?.into_int_value();
+        let right_int = self.generate_expression(right)?.into_int_value();
+        let res = match op {
+            BinaryOp::Add => self
+                .builder
+                .build_int_add(left_int, right_int, "add")
+                .map(Into::into)?,
+            BinaryOp::Sub => self
+                .builder
+                .build_int_sub(left_int, right_int, "sub")
+                .map(Into::into)?,
+            BinaryOp::Mul => self
+                .builder
+                .build_int_mul(left_int, right_int, "mul")
+                .map(Into::into)?,
+            BinaryOp::Div => {
+                if is_signed {
+                    self.builder
+                        .build_int_signed_div(left_int, right_int, "sdiv")
+                        .map(Into::into)?
+                } else {
+                    self.builder
+                        .build_int_unsigned_div(left_int, right_int, "udiv")
+                        .map(Into::into)?
+                }
             }
-        } else if is_pointer {
+            BinaryOp::Mod => {
+                if is_signed {
+                    self.builder
+                        .build_int_signed_rem(left_int, right_int, "srem")
+                        .map(Into::into)?
+                } else {
+                    self.builder
+                        .build_int_unsigned_rem(left_int, right_int, "urem")
+                        .map(Into::into)?
+                }
+            }
+            BinaryOp::And => self
+                .builder
+                .build_and(left_int, right_int, "and")
+                .map(Into::into)?,
+            BinaryOp::Or => self
+                .builder
+                .build_or(left_int, right_int, "or")
+                .map(Into::into)?,
+            BinaryOp::Xor => self
+                .builder
+                .build_xor(left_int, right_int, "xor")
+                .map(Into::into)?,
+            BinaryOp::LeftShift => self
+                .builder
+                .build_left_shift(left_int, right_int, "shl")
+                .map(Into::into)?,
+            BinaryOp::RightShift => {
+                if is_signed {
+                    self.builder
+                        .build_right_shift(left_int, right_int, true, "ashr")
+                        .map(Into::into)?
+                } else {
+                    self.builder
+                        .build_right_shift(left_int, right_int, false, "lshr")
+                        .map(Into::into)?
+                }
+            }
+        };
+        Ok(res)
+    }
+
+    fn generate_float_binary_op(
+        &mut self,
+        left: &Expression,
+        op: &BinaryOp,
+        right: &Expression,
+    ) -> Result<BasicValueEnum<'ctx>, CodegenError> {
+        let left_float = self.generate_expression(left)?.into_float_value();
+        let right_float =self.generate_expression(right)?.into_float_value();
+        match op {
+            BinaryOp::Add => Ok(self
+                .builder
+                .build_float_add(left_float, right_float, "fadd")
+                .map(Into::into)?),
+            BinaryOp::Sub => Ok(self
+                .builder
+                .build_float_sub(left_float, right_float, "fsub")
+                .map(Into::into)?),
+            BinaryOp::Mul => Ok(self
+                .builder
+                .build_float_mul(left_float, right_float, "fmul")
+                .map(Into::into)?),
+            BinaryOp::Div => Ok(self
+                .builder
+                .build_float_div(left_float, right_float, "fdiv")
+                .map(Into::into)?),
+            _ => Err(CodegenError::InvalidOperation(
+                format!("Operator {op:?} not supported for floats"),
+                left.pos,
+            ))
+        }
+    }
+
+    fn generate_pointer_binary_op(&mut self, left: &Expression, op: &BinaryOp, right: &Expression) -> Result<BasicValueEnum<'ctx>, CodegenError> {
+        if right.expr_type.pointer_depth > 0 {
             return Err(CodegenError::InvalidOperation(
-                "Pointer arithmetic not yet supported".to_string(),
+                "Pointer arithmetic only allowed with integers".to_string(),
                 left.pos,
             ));
-        }else {
-            let left_int = left_val.into_int_value();
-            let right_int = right_val.into_int_value();
-            let is_signed = matches!(left.expr_type.base, TypeBase::SInt);
+        }
+        let left_ptr = self.generate_expression(left)?.into_pointer_value();
+        let right_int = self.generate_expression(right)?.into_int_value();
+        let pointee_type = lang_type_to_llvm(self.context, &LangType {
+            base: left.expr_type.base.clone(),
+            size_bits: left.expr_type.size_bits,
+            pointer_depth: left.expr_type.pointer_depth - 1,
+            is_const: left.expr_type.is_const,
+        })?;
+        
+        match op {
+            BinaryOp::Add => unsafe {
+                Ok(self.builder.build_gep(pointee_type, left_ptr, &[right_int], "ptr_add")
+                    .map(Into::into)?)
+            },
+            BinaryOp::Sub => {
+                let neg_right = self.builder
+                    .build_int_neg(right_int, "neg")
+                    ?;
+                unsafe {
+                    Ok(self.builder.build_gep(pointee_type, left_ptr, &[neg_right], "ptr_sub")
+                        .map(Into::into)?)
+                }
+            },
+            _ => Err(CodegenError::InvalidOperation(
+                format!("Operator {op:?} not supported for pointers"),
+                left.pos,
+            )),
+        }
+    }
 
-            match op {
-                BinaryOp::Add => self.builder.build_int_add(left_int, right_int, "add")
-                    .map(|v| v.into())
-                    .map_err(|e| CodegenError::LLVMError(e.to_string())),
-                BinaryOp::Sub => self.builder.build_int_sub(left_int, right_int, "sub")
-                    .map(|v| v.into())
-                    .map_err(|e| CodegenError::LLVMError(e.to_string())),
-                BinaryOp::Mul => self.builder.build_int_mul(left_int, right_int, "mul")
-                    .map(|v| v.into())
-                    .map_err(|e| CodegenError::LLVMError(e.to_string())),
-                BinaryOp::Div => {
-                    if is_signed {
-                        self.builder.build_int_signed_div(left_int, right_int, "sdiv")
-                            .map(|v| v.into())
-                            .map_err(|e| CodegenError::LLVMError(e.to_string()))
-                    } else {
-                        self.builder.build_int_unsigned_div(left_int, right_int, "udiv")
-                            .map(|v| v.into())
-                            .map_err(|e| CodegenError::LLVMError(e.to_string()))
-                    }
-                }
-                BinaryOp::Mod => {
-                    if is_signed {
-                        self.builder.build_int_signed_rem(left_int, right_int, "srem")
-                            .map(|v| v.into())
-                            .map_err(|e| CodegenError::LLVMError(e.to_string()))
-                    } else {
-                        self.builder.build_int_unsigned_rem(left_int, right_int, "urem")
-                            .map(|v| v.into())
-                            .map_err(|e| CodegenError::LLVMError(e.to_string()))
-                    }
-                }
-                BinaryOp::And => self.builder.build_and(left_int, right_int, "and")
-                    .map(|v| v.into())
-                    .map_err(|e| CodegenError::LLVMError(e.to_string())),
-                BinaryOp::Or => self.builder.build_or(left_int, right_int, "or")
-                    .map(|v| v.into())
-                    .map_err(|e| CodegenError::LLVMError(e.to_string())),
-                BinaryOp::Xor => self.builder.build_xor(left_int, right_int, "xor")
-                    .map(|v| v.into())
-                    .map_err(|e| CodegenError::LLVMError(e.to_string())),
-                BinaryOp::LeftShift => self.builder.build_left_shift(left_int, right_int, "shl")
-                    .map(|v| v.into())
-                    .map_err(|e| CodegenError::LLVMError(e.to_string())),
-                BinaryOp::RightShift => {
-                    if is_signed {
-                        self.builder.build_right_shift(left_int, right_int, true, "ashr")
-                            .map(|v| v.into())
-                            .map_err(|e| CodegenError::LLVMError(e.to_string()))
-                    } else {
-                        self.builder.build_right_shift(left_int, right_int, false, "lshr")
-                            .map(|v| v.into())
-                            .map_err(|e| CodegenError::LLVMError(e.to_string()))
-                    }
-                }
-            }
+    /// Generate a binary operation
+    fn generate_binary_op(
+        &mut self,
+        left: &Expression,
+        op: &BinaryOp,
+        right: &Expression,
+    ) -> Result<BasicValueEnum<'ctx>, CodegenError> {
+        // Determine if we're working with floats or ints
+        let is_float = matches!(left.expr_type.base, TypeBase::SFloat);
+
+        // Pointers are special. They should only be allowed to be manipulated by integers, and you can only do addition and subtraction.
+        let is_pointer = left.expr_type.pointer_depth > 0;
+
+        if is_float {
+            self.generate_float_binary_op(left, op, right)
+        } else if is_pointer {
+            self.generate_pointer_binary_op(left, op, right)
+        } else {
+            self.generate_int_binary_op(left, op, right)
         }
     }
 
     /// Generate a comparison
-    fn generate_comparison(&mut self, left: &Expression, op: &ComparisonOp, right: &Expression) -> Result<BasicValueEnum<'ctx>, CodegenError> {
+    fn generate_comparison(
+        &mut self,
+        left: &Expression,
+        op: &ComparisonOp,
+        right: &Expression,
+    ) -> Result<BasicValueEnum<'ctx>, CodegenError> {
         let left_val = self.generate_expression(left)?;
         let right_val = self.generate_expression(right)?;
 
@@ -707,13 +841,15 @@ impl<'ctx> CodeGenerator<'ctx> {
                 ComparisonOp::GreaterEqual => inkwell::FloatPredicate::OGE,
             };
 
-            let cmp = self.builder.build_float_compare(predicate, left_float, right_float, "fcmp")
-                .map_err(|e| CodegenError::LLVMError(e.to_string()))?;
+            let cmp = self
+                .builder
+                .build_float_compare(predicate, left_float, right_float, "fcmp")
+                ?;
 
             // Extend to i32
-            self.builder.build_int_z_extend(cmp, self.context.i32_type(), "cmp_ext")
-                .map(|v| v.into())
-                .map_err(|e| CodegenError::LLVMError(e.to_string()))
+            Ok(self.builder
+                .build_int_z_extend(cmp, self.context.i32_type(), "cmp_ext")
+                .map(Into::into)?)
         } else {
             let left_int = left_val.into_int_value();
             let right_int = right_val.into_int_value();
@@ -722,25 +858,58 @@ impl<'ctx> CodeGenerator<'ctx> {
             let predicate = match op {
                 ComparisonOp::Equal => IntPredicate::EQ,
                 ComparisonOp::NotEqual => IntPredicate::NE,
-                ComparisonOp::Less => if is_signed { IntPredicate::SLT } else { IntPredicate::ULT },
-                ComparisonOp::Greater => if is_signed { IntPredicate::SGT } else { IntPredicate::UGT },
-                ComparisonOp::LessEqual => if is_signed { IntPredicate::SLE } else { IntPredicate::ULE },
-                ComparisonOp::GreaterEqual => if is_signed { IntPredicate::SGE } else { IntPredicate::UGE },
+                ComparisonOp::Less => {
+                    if is_signed {
+                        IntPredicate::SLT
+                    } else {
+                        IntPredicate::ULT
+                    }
+                }
+                ComparisonOp::Greater => {
+                    if is_signed {
+                        IntPredicate::SGT
+                    } else {
+                        IntPredicate::UGT
+                    }
+                }
+                ComparisonOp::LessEqual => {
+                    if is_signed {
+                        IntPredicate::SLE
+                    } else {
+                        IntPredicate::ULE
+                    }
+                }
+                ComparisonOp::GreaterEqual => {
+                    if is_signed {
+                        IntPredicate::SGE
+                    } else {
+                        IntPredicate::UGE
+                    }
+                }
             };
 
-            let cmp = self.builder.build_int_compare(predicate, left_int, right_int, "icmp")
-                .map_err(|e| CodegenError::LLVMError(e.to_string()))?;
+            let cmp = self
+                .builder
+                .build_int_compare(predicate, left_int, right_int, "icmp")
+                ?;
 
             // Extend to i32
-            self.builder.build_int_z_extend(cmp, self.context.i32_type(), "cmp_ext")
-                .map(|v| v.into())
-                .map_err(|e| CodegenError::LLVMError(e.to_string()))
+            Ok(self.builder
+                .build_int_z_extend(cmp, self.context.i32_type(), "cmp_ext")
+                .map(Into::into)?)
         }
     }
 
     /// Generate a function call (expression context - must return a value)
-    fn generate_function_call(&mut self, name: &str, args: &[Expression], pos: crate::lexer::Position) -> Result<BasicValueEnum<'ctx>, CodegenError> {
-        let function = *self.functions.get(name)
+    fn generate_function_call(
+        &mut self,
+        name: &str,
+        args: &[Expression],
+        pos: crate::lexer::Position,
+    ) -> Result<BasicValueEnum<'ctx>, CodegenError> {
+        let function = *self
+            .functions
+            .get(name)
             .ok_or_else(|| CodegenError::UndefinedFunction(name.to_string(), pos))?;
 
         let mut arg_values = Vec::new();
@@ -749,18 +918,28 @@ impl<'ctx> CodeGenerator<'ctx> {
             arg_values.push(val.into());
         }
 
-        let call_result = self.builder.build_call(function, &arg_values, "call")
-            .map_err(|e| CodegenError::LLVMError(e.to_string()))?;
+        let call_result = self
+            .builder
+            .build_call(function, &arg_values, "call")
+            ?;
 
         // Extract BasicValueEnum from the call result
-        call_result.try_as_basic_value()
+        call_result
+            .try_as_basic_value()
             .basic()
-            .ok_or_else(|| CodegenError::LLVMError("Function returned void".to_string()))
+            .ok_or_else(|| CodegenError::MissingReturn(name.to_string(), pos))
     }
 
     /// Generate a function call as a statement (void return is OK)
-    fn generate_function_call_statement(&mut self, name: &str, args: &[Expression], pos: crate::lexer::Position) -> Result<(), CodegenError> {
-        let function = *self.functions.get(name)
+    fn generate_function_call_statement(
+        &mut self,
+        name: &str,
+        args: &[Expression],
+        pos: crate::lexer::Position,
+    ) -> Result<(), CodegenError> {
+        let function = *self
+            .functions
+            .get(name)
             .ok_or_else(|| CodegenError::UndefinedFunction(name.to_string(), pos))?;
 
         let mut arg_values = Vec::new();
@@ -769,74 +948,105 @@ impl<'ctx> CodeGenerator<'ctx> {
             arg_values.push(val.into());
         }
 
-        self.builder.build_call(function, &arg_values, "call")
-            .map_err(|e| CodegenError::LLVMError(e.to_string()))?;
+        self.builder
+            .build_call(function, &arg_values, "call")
+            ?;
 
         Ok(())
     }
 
     /// Generate a type cast
-    fn generate_cast(&mut self, expr: &Expression, target_type: &crate::lexer::LangType) -> Result<BasicValueEnum<'ctx>, CodegenError> {
+    fn generate_cast(
+        &mut self,
+        expr: &Expression,
+        target_type: &crate::lexer::LangType,
+    ) -> Result<BasicValueEnum<'ctx>, CodegenError> {
         let value = self.generate_expression(expr)?;
         let target_llvm_type = lang_type_to_llvm(self.context, target_type)?;
-
         // Handle pointer casts
         if target_type.pointer_depth > 0 {
-            if expr.expr_type.pointer_depth == 0 {
-                return Ok(self.builder.build_int_to_ptr(
-                    value.into_int_value(),
-                    target_llvm_type.into_pointer_type(),
-                    "inttoptr"
-                ).map_err(|e| CodegenError::LLVMError(e.to_string()))?.into());
+            return if expr.expr_type.pointer_depth == 0 {
+                Ok(self
+                    .builder
+                    .build_int_to_ptr(
+                        value.into_int_value(),
+                        target_llvm_type.into_pointer_type(),
+                        "inttoptr",
+                    )?.into())
             } else {
-                return Ok(self.builder.build_pointer_cast(
-                    value.into_pointer_value(),
-                    target_llvm_type.into_pointer_type(),
-                    "ptrcast"
-                ).map_err(|e| CodegenError::LLVMError(e.to_string()))?.into());
+                Ok(self
+                    .builder
+                    .build_pointer_cast(
+                        value.into_pointer_value(),
+                        target_llvm_type.into_pointer_type(),
+                        "ptrcast",
+                    )?.into())
             }
         }
 
         // Handle int to float
-        if matches!(target_type.base, TypeBase::SFloat) && matches!(expr.expr_type.base, TypeBase::SInt | TypeBase::UInt) {
+        if matches!(target_type.base, TypeBase::SFloat)
+            && matches!(expr.expr_type.base, TypeBase::SInt | TypeBase::UInt)
+        {
             let int_val = value.into_int_value();
             let is_signed = matches!(expr.expr_type.base, TypeBase::SInt);
 
-            return if is_signed {
-                self.builder.build_signed_int_to_float(int_val, target_llvm_type.into_float_type(), "sitofp")
-                    .map(|v| v.into())
-                    .map_err(|e| CodegenError::LLVMError(e.to_string()))
+            return Ok(if is_signed {
+                self.builder
+                    .build_signed_int_to_float(
+                        int_val,
+                        target_llvm_type.into_float_type(),
+                        "sitofp",
+                    )
+                    .map(Into::into)?
             } else {
-                self.builder.build_unsigned_int_to_float(int_val, target_llvm_type.into_float_type(), "uitofp")
-                    .map(|v| v.into())
-                    .map_err(|e| CodegenError::LLVMError(e.to_string()))
-            };
+                self.builder
+                    .build_unsigned_int_to_float(
+                        int_val,
+                        target_llvm_type.into_float_type(),
+                        "uitofp",
+                    )
+                    .map(Into::into)?
+            });
         }
 
         // Handle float to int
-        if matches!(expr.expr_type.base, TypeBase::SFloat) && matches!(target_type.base, TypeBase::SInt | TypeBase::UInt) {
+        if matches!(expr.expr_type.base, TypeBase::SFloat)
+            && matches!(target_type.base, TypeBase::SInt | TypeBase::UInt)
+        {
             let float_val = value.into_float_value();
             let is_signed = matches!(target_type.base, TypeBase::SInt);
 
-            return if is_signed {
-                self.builder.build_float_to_signed_int(float_val, target_llvm_type.into_int_type(), "fptosi")
-                    .map(|v| v.into())
-                    .map_err(|e| CodegenError::LLVMError(e.to_string()))
+            return Ok(if is_signed {
+                self.builder
+                    .build_float_to_signed_int(
+                        float_val,
+                        target_llvm_type.into_int_type(),
+                        "fptosi",
+                    )
+                    .map(Into::into)?
             } else {
-                self.builder.build_float_to_unsigned_int(float_val, target_llvm_type.into_int_type(), "fptoui")
-                    .map(|v| v.into())
-                    .map_err(|e| CodegenError::LLVMError(e.to_string()))
-            };
+                self.builder
+                    .build_float_to_unsigned_int(
+                        float_val,
+                        target_llvm_type.into_int_type(),
+                        "fptoui",
+                    )
+                    .map(Into::into)?
+            });
         }
 
         // Handle int to int (resize)
-        if matches!(expr.expr_type.base, TypeBase::SInt | TypeBase::UInt) && matches!(target_type.base, TypeBase::SInt | TypeBase::UInt) {
+        if matches!(expr.expr_type.base, TypeBase::SInt | TypeBase::UInt)
+            && matches!(target_type.base, TypeBase::SInt | TypeBase::UInt)
+        {
             let target_int_type = target_llvm_type.into_int_type();
             // If the value is a pointer type, it needs special handling
             let int_val = if expr.expr_type.pointer_depth > 0 || target_type.pointer_depth > 0 {
                 let ptr_value = value.into_pointer_value();
-                self.builder.build_ptr_to_int(ptr_value, target_int_type, "ptrtoint")
-                    .map_err(|e| CodegenError::LLVMError(e.to_string()))?
+                self.builder
+                    .build_ptr_to_int(ptr_value, target_int_type, "ptrtoint")
+                    ?
             } else {
                 value.into_int_value()
             };
@@ -844,20 +1054,20 @@ impl<'ctx> CodeGenerator<'ctx> {
 
             return if target_type.size_bits > expr.expr_type.size_bits {
                 // Extend
-                if is_signed {
-                    self.builder.build_int_s_extend(int_val, target_int_type, "sext")
-                        .map(|v| v.into())
-                        .map_err(|e| CodegenError::LLVMError(e.to_string()))
+                return Ok(if is_signed {
+                    self.builder
+                        .build_int_s_extend(int_val, target_int_type, "sext")
+                        .map(Into::into)?
                 } else {
-                    self.builder.build_int_z_extend(int_val, target_int_type, "zext")
-                        .map(|v| v.into())
-                        .map_err(|e| CodegenError::LLVMError(e.to_string()))
-                }
+                    self.builder
+                        .build_int_z_extend(int_val, target_int_type, "zext")
+                        .map(Into::into)?
+                })
             } else {
                 // Truncate
-                self.builder.build_int_truncate(int_val, target_int_type, "trunc")
-                    .map(|v| v.into())
-                    .map_err(|e| CodegenError::LLVMError(e.to_string()))
+                Ok(self.builder
+                    .build_int_truncate(int_val, target_int_type, "trunc")
+                    .map(Into::into)?)
             };
         }
 
@@ -866,18 +1076,26 @@ impl<'ctx> CodeGenerator<'ctx> {
     }
 
     /// Generate a constant expression (for global initializers)
-    fn generate_constant_expression(&self, expr: &Expression) -> Result<BasicValueEnum<'ctx>, CodegenError> {
+    fn generate_constant_expression(
+        &self,
+        expr: &Expression,
+    ) -> Result<BasicValueEnum<'ctx>, CodegenError> {
         match &expr.kind {
             ExprKind::Literal(lit) => self.generate_constant_literal(lit, &expr.expr_type),
             _ => Err(CodegenError::InvalidOperation(
                 "Non-constant expression in global initializer".to_string(),
                 expr.pos,
-            ))
+            )),
         }
     }
 
     /// Generate a constant literal (without using the builder)
-    fn generate_constant_literal(&self, lit: &LiteralValue, ty: &crate::lexer::LangType) -> Result<BasicValueEnum<'ctx>, CodegenError> {
+    #[allow(clippy::cast_sign_loss)]
+    fn generate_constant_literal(
+        &self,
+        lit: &LiteralValue,
+        ty: &crate::lexer::LangType,
+    ) -> Result<BasicValueEnum<'ctx>, CodegenError> {
         match lit {
             LiteralValue::Integer(val) => {
                 let llvm_type = lang_type_to_llvm(self.context, ty)?;
@@ -888,32 +1106,31 @@ impl<'ctx> CodeGenerator<'ctx> {
                     _ => Err(CodegenError::TypeError(
                         "Integer literal must have integer type".to_string(),
                         crate::lexer::Position::new(0, 0),
-                    ))
+                    )),
                 }
             }
 
             LiteralValue::Float(val) => {
                 let llvm_type = lang_type_to_llvm(self.context, ty)?;
                 match llvm_type {
-                    BasicTypeEnum::FloatType(float_ty) => {
-                        Ok(float_ty.const_float(*val).into())
-                    }
+                    BasicTypeEnum::FloatType(float_ty) => Ok(float_ty.const_float(*val).into()),
                     _ => Err(CodegenError::TypeError(
                         "Float literal must have float type".to_string(),
                         crate::lexer::Position::new(0, 0),
-                    ))
+                    )),
                 }
             }
 
             LiteralValue::String(index) => {
                 // Look up the string global
-                let string_name = format!(".str.{}", index);
-                let global_ptr = self.global_variables.get(&string_name)
-                    .ok_or_else(|| CodegenError::LLVMError(format!("String literal {} not found", index)))?;
+                let string_name = format!(".str.{index}");
+                let global_ptr = self.global_variables.get(&string_name).expect(
+                    "Internal error: String literal global not found",
+                );
 
                 // For constants, we can just use the global pointer directly
                 // Cast to i8* using const_cast
-                let i8_ptr_type = self.context.i8_type().ptr_type(AddressSpace::default());
+                let i8_ptr_type = self.context.ptr_type(AddressSpace::default());
                 Ok(global_ptr.const_cast(i8_ptr_type).into())
             }
         }
@@ -925,13 +1142,13 @@ impl<'ctx> CodeGenerator<'ctx> {
             let int_val = value.into_int_value();
             // Compare with zero
             let zero = int_val.get_type().const_zero();
-            self.builder.build_int_compare(IntPredicate::NE, int_val, zero, "tobool")
-                .map_err(|e| CodegenError::LLVMError(e.to_string()))
+            Ok(self.builder
+                .build_int_compare(IntPredicate::NE, int_val, zero, "tobool")?)
         } else if value.is_float_value() {
             let float_val = value.into_float_value();
             let zero = float_val.get_type().const_zero();
-            self.builder.build_float_compare(inkwell::FloatPredicate::ONE, float_val, zero, "tobool")
-                .map_err(|e| CodegenError::LLVMError(e.to_string()))
+            Ok(self.builder
+                .build_float_compare(inkwell::FloatPredicate::ONE, float_val, zero, "tobool")?)
         } else {
             Err(CodegenError::TypeError(
                 "Cannot convert value to boolean".to_string(),
@@ -942,13 +1159,17 @@ impl<'ctx> CodeGenerator<'ctx> {
 
     /// Check if the current block has a terminator
     fn block_has_terminator(&self) -> bool {
-        self.builder.get_insert_block()
-            .and_then(|block| block.get_terminator())
+        self.builder
+            .get_insert_block()
+            .and_then(inkwell::basic_block::BasicBlock::get_terminator)
             .is_some()
     }
 
     /// Get a zero value for a type
-    fn get_zero_value(&self, ty: &crate::lexer::LangType) -> Result<BasicValueEnum<'ctx>, CodegenError> {
+    fn get_zero_value(
+        &self,
+        ty: &crate::lexer::LangType,
+    ) -> Result<BasicValueEnum<'ctx>, CodegenError> {
         let llvm_type = lang_type_to_llvm(self.context, ty)?;
         Ok(llvm_type.const_zero())
     }
@@ -990,8 +1211,13 @@ impl<'ctx> CodeGenerator<'ctx> {
     }
 
     /// Write LLVM IR to a file
+    /// # Panics
+    /// When writing to the file fails
+    /// # Errors
+    /// Never
     pub fn write_to_file(&self, path: &std::path::Path) -> Result<(), CodegenError> {
-        self.module.print_to_file(path)
-            .map_err(|e| CodegenError::LLVMError(e.to_string()))
+        self.module
+            .print_to_file(path).expect("Failed to write LLVM IR to file");
+        Ok(())
     }
 }

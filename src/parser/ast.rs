@@ -27,6 +27,7 @@ pub enum BinaryOp {
 }
 
 impl BinaryOp {
+    #[must_use]
     pub fn precedence(&self) -> i32 {
         match self {
             BinaryOp::LeftShift | BinaryOp::RightShift => 2,
@@ -86,6 +87,7 @@ pub struct Expression {
 }
 
 impl Expression {
+    #[must_use]
     pub fn new(kind: ExprKind, expr_type: LangType, pos: Position) -> Self {
         Self {
             kind,
@@ -139,6 +141,7 @@ pub struct Statement {
 }
 
 impl Statement {
+    #[must_use]
     pub fn new(kind: StatementKind, pos: Position) -> Self {
         Self { kind, pos }
     }

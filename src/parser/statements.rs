@@ -1,4 +1,4 @@
-use crate::lexer::{Token, TokenKind, Keyword, Position};
+use crate::lexer::{TokenKind, Keyword, Position};
 use crate::parser::{Statement, StatementKind, Expression, ParserError};
 use crate::parser::expressions::Parser;
 
@@ -6,8 +6,6 @@ impl Parser {
     /// Parse a statement
     pub(crate) fn parse_statement(&mut self) -> Result<Statement, ParserError> {
         self.skip_newlines();
-
-        let pos = self.peek().pos;
 
         match &self.peek().kind {
             // Block statement
@@ -62,7 +60,7 @@ impl Parser {
     /// Parse a block statement { ... }
     pub(crate) fn parse_block_statement(&mut self) -> Result<Statement, ParserError> {
         let pos = self.peek().pos;
-        self.expect(TokenKind::OpenBrace, "{")?;
+        self.expect(&TokenKind::OpenBrace, "{")?;
 
         self.symbol_table_mut().enter_scope();
 
@@ -75,7 +73,7 @@ impl Parser {
             self.skip_newlines();
         }
 
-        self.expect(TokenKind::CloseBrace, "}")?;
+        self.expect(&TokenKind::CloseBrace, "}")?;
 
         self.symbol_table_mut().exit_scope();
 
@@ -121,7 +119,7 @@ impl Parser {
         self.skip_newlines();
 
         // Parse optional else block
-        let else_block = if self.check_keyword(Keyword::Else) {
+        let else_block = if self.check_keyword(&Keyword::Else) {
             self.advance(); // consume 'else'
             self.skip_newlines();
 
@@ -133,7 +131,7 @@ impl Parser {
             } else {
                 Some(vec![self.parse_statement()?])
             }
-        } else if self.check_keyword(Keyword::Elif) {
+        } else if self.check_keyword(&Keyword::Elif) {
             // Handle elif as else { if ... }
             Some(vec![self.parse_if_statement()?])
         } else {
@@ -180,7 +178,7 @@ impl Parser {
         let pos = self.peek().pos;
         self.advance(); // consume 'for'
 
-        self.expect(TokenKind::OpenParen, "(")?;
+        self.expect(&TokenKind::OpenParen, "(")?;
 
         self.symbol_table_mut().enter_scope();
 
@@ -199,7 +197,7 @@ impl Parser {
             Some(Box::new(self.parse_expression_statement_for_loop()?))
         };
 
-        self.expect(TokenKind::Semicolon, ";")?;
+        self.expect(&TokenKind::Semicolon, ";")?;
 
         // Parse condition
         let condition = if self.check(&TokenKind::Semicolon) {
@@ -208,7 +206,7 @@ impl Parser {
             Some(self.parse_expression()?)
         };
 
-        self.expect(TokenKind::Semicolon, ";")?;
+        self.expect(&TokenKind::Semicolon, ";")?;
 
         // Parse increment (can be expression statement or assignment statement)
         let increment = if self.check(&TokenKind::CloseParen) {
@@ -237,7 +235,7 @@ impl Parser {
             }
         };
 
-        self.expect(TokenKind::CloseParen, ")")?;
+        self.expect(&TokenKind::CloseParen, ")")?;
 
         self.skip_newlines();
 
@@ -349,34 +347,34 @@ impl Parser {
         let value = match op_token.kind {
             TokenKind::Assign => value_expr,
             TokenKind::PlusAssign => {
-                self.create_compound_assignment(&name, var_type, value_expr, crate::parser::BinaryOp::Add, pos)?
+                Self::create_compound_assignment(&name, var_type, value_expr, crate::parser::BinaryOp::Add, pos)
             }
             TokenKind::MinusAssign => {
-                self.create_compound_assignment(&name, var_type, value_expr, crate::parser::BinaryOp::Sub, pos)?
+                Self::create_compound_assignment(&name, var_type, value_expr, crate::parser::BinaryOp::Sub, pos)
             }
             TokenKind::MultAssign => {
-                self.create_compound_assignment(&name, var_type, value_expr, crate::parser::BinaryOp::Mul, pos)?
+                Self::create_compound_assignment(&name, var_type, value_expr, crate::parser::BinaryOp::Mul, pos)
             }
             TokenKind::DivAssign => {
-                self.create_compound_assignment(&name, var_type, value_expr, crate::parser::BinaryOp::Div, pos)?
+                Self::create_compound_assignment(&name, var_type, value_expr, crate::parser::BinaryOp::Div, pos)
             }
             TokenKind::ModAssign => {
-                self.create_compound_assignment(&name, var_type, value_expr, crate::parser::BinaryOp::Mod, pos)?
+                Self::create_compound_assignment(&name, var_type, value_expr, crate::parser::BinaryOp::Mod, pos)
             }
             TokenKind::AndAssign => {
-                self.create_compound_assignment(&name, var_type, value_expr, crate::parser::BinaryOp::And, pos)?
+                Self::create_compound_assignment(&name, var_type, value_expr, crate::parser::BinaryOp::And, pos)
             }
             TokenKind::OrAssign => {
-                self.create_compound_assignment(&name, var_type, value_expr, crate::parser::BinaryOp::Or, pos)?
+                Self::create_compound_assignment(&name, var_type, value_expr, crate::parser::BinaryOp::Or, pos)
             }
             TokenKind::XorAssign => {
-                self.create_compound_assignment(&name, var_type, value_expr, crate::parser::BinaryOp::Xor, pos)?
+                Self::create_compound_assignment(&name, var_type, value_expr, crate::parser::BinaryOp::Xor, pos)
             }
             TokenKind::LeftShiftAssign => {
-                self.create_compound_assignment(&name, var_type, value_expr, crate::parser::BinaryOp::LeftShift, pos)?
+                Self::create_compound_assignment(&name, var_type, value_expr, crate::parser::BinaryOp::LeftShift, pos)
             }
             TokenKind::RightShiftAssign => {
-                self.create_compound_assignment(&name, var_type, value_expr, crate::parser::BinaryOp::RightShift, pos)?
+                Self::create_compound_assignment(&name, var_type, value_expr, crate::parser::BinaryOp::RightShift, pos)
             }
             _ => {
                 return Err(ParserError::UnexpectedToken(
@@ -394,20 +392,19 @@ impl Parser {
 
     /// Create a compound assignment expression (e.g., x += 5 becomes x = x + 5)
     fn create_compound_assignment(
-        &self,
         name: &str,
         var_type: crate::lexer::LangType,
         value_expr: Expression,
         op: crate::parser::BinaryOp,
         pos: Position,
-    ) -> Result<Expression, ParserError> {
+    ) -> Expression {
         let var_expr = Expression::new(
             crate::parser::ExprKind::Variable(name.to_string()),
             var_type.clone(),
             pos,
         );
 
-        Ok(Expression::new(
+        Expression::new(
             crate::parser::ExprKind::Binary {
                 left: Box::new(var_expr),
                 op,
@@ -415,7 +412,7 @@ impl Parser {
             },
             var_type,
             pos,
-        ))
+        )
     }
 
     /// Parse expression statement
@@ -519,34 +516,34 @@ impl Parser {
         let value = match op_token.kind {
             TokenKind::Assign => value_expr,
             TokenKind::PlusAssign => {
-                self.create_compound_assignment(&name, var_type, value_expr, crate::parser::BinaryOp::Add, pos)?
+                Self::create_compound_assignment(&name, var_type, value_expr, crate::parser::BinaryOp::Add, pos)
             }
             TokenKind::MinusAssign => {
-                self.create_compound_assignment(&name, var_type, value_expr, crate::parser::BinaryOp::Sub, pos)?
+                Self::create_compound_assignment(&name, var_type, value_expr, crate::parser::BinaryOp::Sub, pos)
             }
             TokenKind::MultAssign => {
-                self.create_compound_assignment(&name, var_type, value_expr, crate::parser::BinaryOp::Mul, pos)?
+                Self::create_compound_assignment(&name, var_type, value_expr, crate::parser::BinaryOp::Mul, pos)
             }
             TokenKind::DivAssign => {
-                self.create_compound_assignment(&name, var_type, value_expr, crate::parser::BinaryOp::Div, pos)?
+                Self::create_compound_assignment(&name, var_type, value_expr, crate::parser::BinaryOp::Div, pos)
             }
             TokenKind::ModAssign => {
-                self.create_compound_assignment(&name, var_type, value_expr, crate::parser::BinaryOp::Mod, pos)?
+                Self::create_compound_assignment(&name, var_type, value_expr, crate::parser::BinaryOp::Mod, pos)
             }
             TokenKind::AndAssign => {
-                self.create_compound_assignment(&name, var_type, value_expr, crate::parser::BinaryOp::And, pos)?
+                Self::create_compound_assignment(&name, var_type, value_expr, crate::parser::BinaryOp::And, pos)
             }
             TokenKind::OrAssign => {
-                self.create_compound_assignment(&name, var_type, value_expr, crate::parser::BinaryOp::Or, pos)?
+                Self::create_compound_assignment(&name, var_type, value_expr, crate::parser::BinaryOp::Or, pos)
             }
             TokenKind::XorAssign => {
-                self.create_compound_assignment(&name, var_type, value_expr, crate::parser::BinaryOp::Xor, pos)?
+                Self::create_compound_assignment(&name, var_type, value_expr, crate::parser::BinaryOp::Xor, pos)
             }
             TokenKind::LeftShiftAssign => {
-                self.create_compound_assignment(&name, var_type, value_expr, crate::parser::BinaryOp::LeftShift, pos)?
+                Self::create_compound_assignment(&name, var_type, value_expr, crate::parser::BinaryOp::LeftShift, pos)
             }
             TokenKind::RightShiftAssign => {
-                self.create_compound_assignment(&name, var_type, value_expr, crate::parser::BinaryOp::RightShift, pos)?
+                Self::create_compound_assignment(&name, var_type, value_expr, crate::parser::BinaryOp::RightShift, pos)
             }
             _ => {
                 return Err(ParserError::UnexpectedToken(
@@ -602,7 +599,7 @@ impl Parser {
         }
 
         // Expect assignment operator
-        self.expect(TokenKind::Assign, "=")?;
+        self.expect(&TokenKind::Assign, "=")?;
 
         // Parse the right-hand side value
         let value = self.parse_expression()?;

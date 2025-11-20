@@ -7,8 +7,3 @@ pub mod lexer;
 pub mod parser;
 pub mod symbol;
 pub mod codegen;
-
-pub use lexer::*;
-pub use parser::*;
-pub use symbol::*;
-pub use codegen::*;

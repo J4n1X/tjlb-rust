@@ -40,12 +40,13 @@ impl fmt::Display for Keyword {
             Keyword::As => "as",
             Keyword::Return => "return",
         };
-        write!(f, "{}", s)
+        write!(f, "{s}")
     }
 }
 
 impl Keyword {
-    pub fn from_str(s: &str) -> Option<Self> {
+    #[must_use]
+    pub fn keyword_from_str(s: &str) -> Option<Self> {
         match s {
             "fn" => Some(Keyword::Fn),
             "extern" => Some(Keyword::Extern),
@@ -157,6 +158,7 @@ pub struct LangType {
 }
 
 impl LangType {
+    #[must_use]
     pub fn new(base: TypeBase, size_bits: u32, pointer_depth: u32, is_const: bool) -> Self {
         Self {
             base,
@@ -166,7 +168,8 @@ impl LangType {
         }
     }
     
-    pub fn from_str(s: &str) -> Option<Self> {
+    #[must_use]
+    pub fn langtype_from_str(s: &str) -> Option<Self> {
         if s.len() < 2 {
             return None;
         }
@@ -184,18 +187,19 @@ impl LangType {
         // Special case for void (u0)
         if matches!(base, TypeBase::UInt) && size == 0 {
             Some(LangType::new(TypeBase::Void, 0, 0, false))
-        } else if size % 8 == 0 && size > 0 {
+        } else if size.is_multiple_of(8) && size > 0 {
             Some(LangType::new(base, size, 0, false))
         } else {
             None
         }
     }
-    
+    #[must_use]
     pub fn with_const(mut self, is_const: bool) -> Self {
         self.is_const = is_const;
         self
     }
     
+    #[must_use]
     pub fn with_pointer_depth(mut self, depth: u32) -> Self {
         self.pointer_depth = depth;
         self
@@ -229,6 +233,7 @@ pub struct Token {
 }
 
 impl Token {
+    #[must_use]
     pub fn new(kind: TokenKind, pos: Position, lexeme: String) -> Self {
         Self { kind, pos, lexeme }
     }
@@ -280,12 +285,12 @@ impl fmt::Display for TokenKind {
             TokenKind::XorAssign => write!(f, "^="),
             TokenKind::LeftShiftAssign => write!(f, "<<="),
             TokenKind::RightShiftAssign => write!(f, ">>="),
-            TokenKind::Integer(n) => write!(f, "{}", n),
-            TokenKind::Float(n) => write!(f, "{}", n),
-            TokenKind::StringLiteral(s) => write!(f, "\"{}\"", s),
-            TokenKind::Identifier(s) => write!(f, "{}", s),
-            TokenKind::Keyword(kw) => write!(f, "{}", kw),
-            TokenKind::LangType(ty) => write!(f, "{}", ty),
+            TokenKind::Integer(n) => write!(f, "{n}"),
+            TokenKind::Float(n) => write!(f, "{n}"),
+            TokenKind::StringLiteral(s) => write!(f, "\"{s}\""),
+            TokenKind::Identifier(s) => write!(f, "{s}"),
+            TokenKind::Keyword(kw) => write!(f, "{kw}"),
+            TokenKind::LangType(ty) => write!(f, "{ty}"),
             TokenKind::Newline => write!(f, "\\n"),
             TokenKind::Eof => write!(f, "EOF"),
         }
