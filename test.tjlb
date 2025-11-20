@@ -7,40 +7,40 @@ extern fn malloc(u64 size) -> u8*
 extern fn puts(u8 *str) -> u0
 extern fn read(i32 fd, u8* buf, u64 size) -> i64
 
-fn strlen(u8 *str) -> u64 {
-  u64 counter = 0
-  while(str + (counter as u8*) != 0 as u8*) {
-    counter += 1
+fn strlen(u8 *str) -> i32 {
+  i32 counter = 0
+  while(*(str + counter) !=  0 as u8) {
+    counter = counter + 1 
   }
   return counter
 }
 
 fn strcat(u8 *dst, u8* src) -> u8* {
-  while(*dst != 0) {
-    dst += 1 as u8*
+  while(*dst != 0 as u8) {
+    dst += 1
   }
-  while(*src != 0) {
+  while(*src != 0 as u8) {
     *dst = *src
-    src += 1 as u8*
-    dst += 1 as u8*
+    src += 1
+    dst += 1
   }
-  *dst = 0
+  *dst = 0 as u8
   return dst
 }
 
 fn main(i32 argc, u8** argv) -> i32 {
-  #-
-  const u8 *question = "What is your name?\n"
+  const u8 *question = "What is your name?"
   const u8 *prefix = "Hello, "
-  const u8 *suffix = "!\n"
+  const u8 *suffix = "!"
   puts(question)
 
   u8 *input_buffer = malloc(BUFSIZ)
-  if(!input_buffer) {
+  if(input_buffer as i32 == 0) {
     puts("Failed to allocate buffer!")
     return -1
   }
   i64 read_len = read(STDIN, input_buffer, BUFSIZ)
-  -#
-  return 0
+  *(input_buffer + read_len - 1) = 0 as u8
+  puts(input_buffer)
+  return read_len as i32
 }
