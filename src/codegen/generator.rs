@@ -29,6 +29,9 @@ pub struct CodeGenerator<'ctx> {
     // We use a Vec of HashMaps to handle nested scopes
     variables: Vec<HashMap<String, PointerValue<'ctx>>>,
 
+    // Track variable types for implicit casting
+    variable_types: Vec<HashMap<String, BasicTypeEnum<'ctx>>>,
+
     // Track global variables
     global_variables: HashMap<String, PointerValue<'ctx>>,
 
@@ -48,6 +51,7 @@ impl<'ctx> CodeGenerator<'ctx> {
             builder,
             functions: HashMap::new(),
             variables: vec![HashMap::new()], // Start with global scope
+            variable_types: vec![HashMap::new()], // Start with global scope
             global_variables: HashMap::new(),
             current_function: None,
         }
@@ -156,7 +160,7 @@ impl<'ctx> CodeGenerator<'ctx> {
                 ?;
 
             // Add to variables
-            self.add_variable(param_name.clone(), alloca);
+            self.add_variable(param_name.clone(), alloca, param_llvm_type);
         }
 
         // Generate function body
@@ -249,7 +253,7 @@ impl<'ctx> CodeGenerator<'ctx> {
             } => {
                 let llvm_type = lang_type_to_llvm(self.context, var_type)?;
 
-                // Allocate stack space
+                // Allocate stack space with proper alignment
                 let alloca = self
                     .builder
                     .build_alloca(llvm_type, name)
@@ -257,7 +261,13 @@ impl<'ctx> CodeGenerator<'ctx> {
 
                 // Initialize if provided
                 if let Some(init_expr) = initializer {
-                    let init_value = self.generate_expression(init_expr)?;
+                    let mut init_value = self.generate_expression(init_expr)?;
+
+                    // If types don't match, insert implicit cast
+                    if init_value.get_type() != llvm_type {
+                        init_value = self.cast_value(init_value, llvm_type, &init_expr.expr_type)?;
+                    }
+
                     self.builder
                         .build_store(alloca, init_value)
                         ?;
@@ -269,7 +279,7 @@ impl<'ctx> CodeGenerator<'ctx> {
                         ?;
                 }
 
-                self.add_variable(name.clone(), alloca);
+                self.add_variable(name.clone(), alloca, llvm_type);
                 Ok(())
             }
 
@@ -278,7 +288,16 @@ impl<'ctx> CodeGenerator<'ctx> {
                     .lookup_variable(name)
                     .ok_or_else(|| CodegenError::UndefinedVariable(name.clone(), stmt.pos))?;
 
-                let value_llvm = self.generate_expression(value)?;
+                let var_type = self
+                    .lookup_variable_type(name)
+                    .ok_or_else(|| CodegenError::UndefinedVariable(name.clone(), stmt.pos))?;
+
+                let mut value_llvm = self.generate_expression(value)?;
+
+                // If types don't match, insert implicit cast
+                if value_llvm.get_type() != var_type {
+                    value_llvm = self.cast_value(value_llvm, var_type, &value.expr_type)?;
+                }
 
                 self.builder
                     .build_store(var_ptr, value_llvm)
@@ -963,9 +982,29 @@ impl<'ctx> CodeGenerator<'ctx> {
     ) -> Result<BasicValueEnum<'ctx>, CodegenError> {
         let value = self.generate_expression(expr)?;
         let target_llvm_type = lang_type_to_llvm(self.context, target_type)?;
+        self.cast_value(value, target_llvm_type, &expr.expr_type)
+    }
+
+    /// Cast a value to a target LLVM type
+    fn cast_value(
+        &self,
+        value: BasicValueEnum<'ctx>,
+        target_llvm_type: BasicTypeEnum<'ctx>,
+        source_lang_type: &crate::lexer::LangType,
+    ) -> Result<BasicValueEnum<'ctx>, CodegenError> {
+        // If types already match, no cast needed
+        if value.get_type() == target_llvm_type {
+            return Ok(value);
+        }
+
+        // Determine target lang type properties from LLVM type
+        let target_is_pointer = matches!(target_llvm_type, BasicTypeEnum::PointerType(_));
+        let target_is_float = matches!(target_llvm_type, BasicTypeEnum::FloatType(_));
+        let target_is_int = matches!(target_llvm_type, BasicTypeEnum::IntType(_));
+
         // Handle pointer casts
-        if target_type.pointer_depth > 0 {
-            return if expr.expr_type.pointer_depth == 0 {
+        if target_is_pointer {
+            return if source_lang_type.pointer_depth == 0 {
                 Ok(self
                     .builder
                     .build_int_to_ptr(
@@ -985,11 +1024,9 @@ impl<'ctx> CodeGenerator<'ctx> {
         }
 
         // Handle int to float
-        if matches!(target_type.base, TypeBase::SFloat)
-            && matches!(expr.expr_type.base, TypeBase::SInt | TypeBase::UInt)
-        {
+        if target_is_float && value.is_int_value() {
             let int_val = value.into_int_value();
-            let is_signed = matches!(expr.expr_type.base, TypeBase::SInt);
+            let is_signed = matches!(source_lang_type.base, TypeBase::SInt);
 
             return Ok(if is_signed {
                 self.builder
@@ -1011,50 +1048,40 @@ impl<'ctx> CodeGenerator<'ctx> {
         }
 
         // Handle float to int
-        if matches!(expr.expr_type.base, TypeBase::SFloat)
-            && matches!(target_type.base, TypeBase::SInt | TypeBase::UInt)
-        {
+        if target_is_int && value.is_float_value() {
             let float_val = value.into_float_value();
-            let is_signed = matches!(target_type.base, TypeBase::SInt);
+            let target_int_type = target_llvm_type.into_int_type();
+            // Assume unsigned for now if we don't have type info
+            // TODO: Pass target lang type to know if signed/unsigned
+            return Ok(self.builder
+                .build_float_to_signed_int(
+                    float_val,
+                    target_int_type,
+                    "fptosi",
+                )
+                .map(Into::into)?);
+        }
 
-            return Ok(if is_signed {
-                self.builder
-                    .build_float_to_signed_int(
-                        float_val,
-                        target_llvm_type.into_int_type(),
-                        "fptosi",
-                    )
-                    .map(Into::into)?
-            } else {
-                self.builder
-                    .build_float_to_unsigned_int(
-                        float_val,
-                        target_llvm_type.into_int_type(),
-                        "fptoui",
-                    )
-                    .map(Into::into)?
-            });
+        // Handle pointer to int
+        if target_is_int && value.is_pointer_value() {
+            let ptr_val = value.into_pointer_value();
+            let target_int_type = target_llvm_type.into_int_type();
+            return Ok(self.builder
+                .build_ptr_to_int(ptr_val, target_int_type, "ptrtoint")
+                .map(Into::into)?);
         }
 
         // Handle int to int (resize)
-        if matches!(expr.expr_type.base, TypeBase::SInt | TypeBase::UInt)
-            && matches!(target_type.base, TypeBase::SInt | TypeBase::UInt)
-        {
+        if target_is_int && value.is_int_value() {
+            let int_val = value.into_int_value();
             let target_int_type = target_llvm_type.into_int_type();
-            // If the value is a pointer type, it needs special handling
-            let int_val = if expr.expr_type.pointer_depth > 0 || target_type.pointer_depth > 0 {
-                let ptr_value = value.into_pointer_value();
-                self.builder
-                    .build_ptr_to_int(ptr_value, target_int_type, "ptrtoint")
-                    ?
-            } else {
-                value.into_int_value()
-            };
-            let is_signed = matches!(expr.expr_type.base, TypeBase::SInt);
+            let source_bits = int_val.get_type().get_bit_width();
+            let target_bits = target_int_type.get_bit_width();
+            let is_signed = matches!(source_lang_type.base, TypeBase::SInt);
 
-            return if target_type.size_bits > expr.expr_type.size_bits {
+            return if target_bits > source_bits {
                 // Extend
-                return Ok(if is_signed {
+                Ok(if is_signed {
                     self.builder
                         .build_int_s_extend(int_val, target_int_type, "sext")
                         .map(Into::into)?
@@ -1063,15 +1090,18 @@ impl<'ctx> CodeGenerator<'ctx> {
                         .build_int_z_extend(int_val, target_int_type, "zext")
                         .map(Into::into)?
                 })
-            } else {
+            } else if target_bits < source_bits {
                 // Truncate
                 Ok(self.builder
                     .build_int_truncate(int_val, target_int_type, "trunc")
                     .map(Into::into)?)
+            } else {
+                // Same size, no cast needed
+                Ok(value)
             };
         }
 
-        // If same type, just return the value
+        // If we can't handle the cast, return the value as-is
         Ok(value)
     }
 
@@ -1177,15 +1207,20 @@ impl<'ctx> CodeGenerator<'ctx> {
     // Scope management
     fn enter_scope(&mut self) {
         self.variables.push(HashMap::new());
+        self.variable_types.push(HashMap::new());
     }
 
     fn exit_scope(&mut self) {
         self.variables.pop();
+        self.variable_types.pop();
     }
 
-    fn add_variable(&mut self, name: String, ptr: PointerValue<'ctx>) {
+    fn add_variable(&mut self, name: String, ptr: PointerValue<'ctx>, ty: BasicTypeEnum<'ctx>) {
         if let Some(scope) = self.variables.last_mut() {
-            scope.insert(name, ptr);
+            scope.insert(name.clone(), ptr);
+        }
+        if let Some(type_scope) = self.variable_types.last_mut() {
+            type_scope.insert(name, ty);
         }
     }
 
@@ -1198,6 +1233,16 @@ impl<'ctx> CodeGenerator<'ctx> {
         }
         // Check globals
         self.global_variables.get(name).copied()
+    }
+
+    fn lookup_variable_type(&self, name: &str) -> Option<BasicTypeEnum<'ctx>> {
+        // Search from innermost to outermost scope
+        for scope in self.variable_types.iter().rev() {
+            if let Some(ty) = scope.get(name) {
+                return Some(*ty);
+            }
+        }
+        None
     }
 
     /// Get the LLVM module

@@ -42,15 +42,34 @@ impl Parser {
                 self.parse_expression_statement()
             }
 
-            // Dereference assignment
+            // Dereference - parse it and check if it's an assignment
             TokenKind::Asterisk => {
-                // Check if this is a dereference assignment by looking ahead
-                // Pattern: * <something> = <expr>
-                // We need to parse the expression after * and see if = follows
-                if self.is_dereference_assignment() {
-                    return self.parse_dereference_assignment();
+                let pos = self.peek().pos;
+                let expr = self.parse_unary()?;
+
+                // Check if this is an assignment
+                if self.check(&TokenKind::Assign) {
+                    // Verify it's actually a dereference
+                    if !matches!(expr.kind, crate::parser::ExprKind::Dereference(_)) {
+                        return Err(ParserError::UnexpectedToken(
+                            "Expected dereference expression for assignment".to_string(),
+                            pos,
+                        ));
+                    }
+
+                    self.advance(); // consume '='
+                    let value = self.parse_expression()?;
+                    self.match_token(&[TokenKind::Semicolon, TokenKind::Newline]);
+
+                    Ok(Statement::new(
+                        StatementKind::DerefAssign { target: expr, value },
+                        pos,
+                    ))
+                } else {
+                    // Just an expression statement
+                    self.match_token(&[TokenKind::Semicolon, TokenKind::Newline]);
+                    Ok(Statement::new(StatementKind::Expression(expr), pos))
                 }
-                self.parse_expression_statement()
             }
 
             _ => self.parse_expression_statement(),
@@ -556,60 +575,4 @@ impl Parser {
         Ok(Statement::new(StatementKind::VarAssign { name, value }, pos))
     }
 
-    /// Check if this is a dereference assignment pattern: *<expr> = <value>
-    fn is_dereference_assignment(&self) -> bool {
-        // Current token should be *
-        if !matches!(self.peek().kind, TokenKind::Asterisk) {
-            return false;
-        }
-
-        // Simple heuristic: check if there's an = within the next few tokens
-        // For *ptr = value, we'd have: * ptr =
-        // For **ptr = value, we'd have: * * ptr =
-        for i in 1..=5 {
-            if let Some(tok) = self.peek_ahead(i) {
-                if matches!(tok.kind, TokenKind::Assign) {
-                    return true;
-                }
-                // Stop if we hit something that definitely ends the expression
-                if matches!(tok.kind, TokenKind::Semicolon | TokenKind::Newline |
-                           TokenKind::OpenBrace | TokenKind::CloseBrace) {
-                    return false;
-                }
-            } else {
-                return false;
-            }
-        }
-        false
-    }
-
-    /// Parse a dereference assignment: *<expr> = <value>
-    fn parse_dereference_assignment(&mut self) -> Result<Statement, ParserError> {
-        let pos = self.peek().pos;
-
-        // Parse the left-hand side (should be a dereference expression)
-        let target = self.parse_unary()?;
-
-        // Verify it's a dereference
-        if !matches!(target.kind, crate::parser::ExprKind::Dereference(_)) {
-            return Err(ParserError::UnexpectedToken(
-                format!("Expected dereference expression for assignment, got {:?}", target.kind),
-                pos,
-            ));
-        }
-
-        // Expect assignment operator
-        self.expect(&TokenKind::Assign, "=")?;
-
-        // Parse the right-hand side value
-        let value = self.parse_expression()?;
-
-        // Consume optional semicolon or newline
-        self.match_token(&[TokenKind::Semicolon, TokenKind::Newline]);
-
-        Ok(Statement::new(
-            StatementKind::DerefAssign { target, value },
-            pos,
-        ))
-    }
 }
