@@ -345,10 +345,16 @@ impl Parser {
     fn parse_postfix(&mut self) -> Result<Expression, ParserError> {
         let mut expr = self.parse_primary()?;
 
-        while let TokenKind::OpenParen = &self.peek().kind {
+        if let TokenKind::OpenParen = &self.peek().kind {
             // Function call
             self.advance();
             expr = self.parse_function_call(&expr)?;
+        } else if let TokenKind::OpenBracket = &self.peek().kind {
+            // Array access
+            self.advance();
+            expr = self.parse_array_access(&expr)?;
+        } else {
+            return Ok(expr);
         }
 
         Ok(expr)
@@ -395,6 +401,45 @@ impl Parser {
             return_type,
             pos,
         ))
+    }
+
+    fn parse_array_access(&mut self, array_expr: &Expression) -> Result<Expression, ParserError> {
+        let pos = array_expr.pos;
+        
+        // Fetch the index expression
+        let index_expr = self.parse_expression()?;
+        self.expect(&TokenKind::CloseBracket, "]")?;
+        // Make sure the index_expr is an integer type
+        if matches!(index_expr.expr_type.base, TypeBase::SInt | TypeBase::UInt) {
+            let return_type = {
+                let mut t = array_expr.expr_type.clone();
+                if t.pointer_depth > 0 {
+                    t.pointer_depth -= 1;
+                }
+                t
+            };
+            // Combine Binary add and dereference to get array access
+            let added_expr = Expression::new(
+                ExprKind::Binary {
+                    left: Box::new(array_expr.clone()),
+                    op: BinaryOp::Add,
+                    right: Box::new(index_expr),
+                },
+                array_expr.expr_type.clone(),
+                pos,
+            );
+            Ok(Expression::new(
+                ExprKind::Dereference(Box::new(added_expr)),
+                return_type,
+                pos,
+            ))
+        } else {
+            Err(ParserError::TypeMismatch(
+                "integer".to_string(),
+                format!("{:?}", index_expr.expr_type),
+                index_expr.pos,
+            ))
+        }
     }
 
     /// Parse primary expressions (literals, identifiers, parenthesized expressions)

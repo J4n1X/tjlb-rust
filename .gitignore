@@ -1,3 +1,5 @@
 /target
 /parser
 Cargo.lock
+*.s
+*.out

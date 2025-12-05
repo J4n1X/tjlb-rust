@@ -28,7 +28,7 @@ impl Parser {
 
             // Expression statement or assignment
             TokenKind::Identifier(_) => {
-                // Look ahead to see if this is an assignment
+                // Look ahead to see if this is a simple assignment (identifier = value)
                 if let Some(next) = self.peek_ahead(1) {
                     if matches!(next.kind,
                         TokenKind::Assign | TokenKind::PlusAssign | TokenKind::MinusAssign |
@@ -39,7 +39,8 @@ impl Parser {
                         return self.parse_assignment_statement();
                     }
                 }
-                self.parse_expression_statement()
+                // Could be array access assignment (arr[i] = value) or expression statement
+                self.parse_expression_or_indexed_assignment()
             }
 
             // Dereference - parse it and check if it's an assignment
@@ -443,6 +444,37 @@ impl Parser {
         self.match_token(&[TokenKind::Semicolon, TokenKind::Newline]);
 
         Ok(Statement::new(StatementKind::Expression(expr), pos))
+    }
+
+    /// Parse an expression that might be followed by an assignment (for array access like arr[i] = value)
+    fn parse_expression_or_indexed_assignment(&mut self) -> Result<Statement, ParserError> {
+        let pos = self.peek().pos;
+        let expr = self.parse_expression()?;
+
+        // Check if this is followed by an assignment operator
+        if self.check(&TokenKind::Assign) {
+            // This must be an indexed/dereference assignment
+            // The expression should be a dereference (array access becomes ptr arithmetic + deref)
+            if !matches!(expr.kind, crate::parser::ExprKind::Dereference(_)) {
+                return Err(ParserError::UnexpectedToken(
+                    "Cannot assign to this expression - expected array access or dereference".to_string(),
+                    pos,
+                ));
+            }
+
+            self.advance(); // consume '='
+            let value = self.parse_expression()?;
+            self.match_token(&[TokenKind::Semicolon, TokenKind::Newline]);
+
+            Ok(Statement::new(
+                StatementKind::DerefAssign { target: expr, value },
+                pos,
+            ))
+        } else {
+            // Just an expression statement
+            self.match_token(&[TokenKind::Semicolon, TokenKind::Newline]);
+            Ok(Statement::new(StatementKind::Expression(expr), pos))
+        }
     }
 
     /// Parse expression statement without consuming terminator (for use in for loops)

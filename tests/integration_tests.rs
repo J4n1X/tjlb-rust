@@ -9,7 +9,15 @@ use tjlb_rust::codegen::CodeGenerator;
 use inkwell::context::Context;
 
 /// Helper function to compile a TJLB program and run it with lli-19
-fn compile_and_run(source_path: &str) -> Result<i32, String> {
+/// Here's what it does in detail:
+/// 1. Reads the source file
+/// 2. Tokenizes the source code
+/// 3. Parses the tokens into an AST
+/// 4. Generates LLVM IR from the AST
+/// 5. Writes the LLVM IR to a temporary file
+/// 6. Executes the IR with lli-19
+/// 7. Captures and returns the exit code of the program
+fn compile_and_run_with_args(source_path: &str, args: &[String]) -> Result<i32, String> {
     // Read source file
     let source = fs::read_to_string(source_path)
         .map_err(|e| format!("Failed to read source file: {e}"))?;
@@ -44,6 +52,7 @@ fn compile_and_run(source_path: &str) -> Result<i32, String> {
     // Run with lli-19
     let output = Command::new("lli-19")
         .arg(ir_file.path())
+        .args(args)
         .output()
         .map_err(|e| format!("Failed to execute lli-19: {e}"))?;
 
@@ -62,6 +71,10 @@ fn compile_and_run(source_path: &str) -> Result<i32, String> {
     }
 
     Ok(exit_code)
+}
+
+fn compile_and_run(source_path: &str) -> Result<i32, String> {
+    compile_and_run_with_args(source_path, &[])
 }
 
 #[test]
@@ -125,4 +138,14 @@ fn test_bitwise() {
     let result = compile_and_run("tests/programs/bitwise.tjlb")
         .expect("Failed to compile and run bitwise.tjlb");
     assert_eq!(result, 28, "Expected exit code 28, got {result}");
+}
+
+#[test]
+fn test_array_access() {
+    let arg = String::from("array_access_test");
+    let arg_len = i32::try_from(arg.len()).unwrap();
+    let result = compile_and_run_with_args("tests/programs/array_access.tjlb", &[arg])
+        .expect("Failed to compile and run brackets.tjlb");
+
+    assert_eq!(result, arg_len, "Expected exit code {arg_len}, got {result}");
 }

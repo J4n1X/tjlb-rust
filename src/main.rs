@@ -1,10 +1,11 @@
+use anyhow::{Context, Result};
 use clap::{Parser as ClapParser, Subcommand};
+use inkwell::context::Context as LLVMContext;
 use std::fs;
 use std::path::PathBuf;
-use tjlb_rust::lexer::{tokenize};
-use tjlb_rust::parser::Parser;
 use tjlb_rust::codegen::CodeGenerator;
-use inkwell::context::Context;
+use tjlb_rust::lexer::tokenize;
+use tjlb_rust::parser::Parser;
 
 #[derive(ClapParser)]
 #[command(name = "tjlb-parser")]
@@ -44,40 +45,34 @@ enum Commands {
     },
 }
 
-fn main() {
+fn main() -> Result<()> {
     let cli = Cli::parse();
 
     match cli.command {
-        Commands::Lex { file } => {
-            if let Err(e) = lex_file(&file) {
-                eprintln!("Error: {e}");
-                std::process::exit(1);
-            }
-        }
-        Commands::Parse { file } => {
-            if let Err(e) = parse_file(&file) {
-                eprintln!("Error: {e}");
-                std::process::exit(1);
-            }
-        }
-        Commands::Compile { file, output, print } => {
-            if let Err(e) = compile_file(&file, output.as_deref(), print) {
-                eprintln!("Error: {e}");
-                std::process::exit(1);
-            }
-        }
+        Commands::Lex { file } => lex_file(&file)?,
+        Commands::Parse { file } => parse_file(&file)?,
+        Commands::Compile {
+            file,
+            output,
+            print,
+        } => compile_file(&file, output.as_deref(), print)?,
     }
+
+    Ok(())
 }
 
-fn lex_file(path: &PathBuf) -> Result<(), Box<dyn std::error::Error>> {
-    let input = fs::read_to_string(path)?;
+fn lex_file(path: &PathBuf) -> Result<()> {
+    let input = fs::read_to_string(path)
+        .with_context(|| format!("failed to read file '{}'", path.display()))?;
 
-    let tokens = tokenize(input)?;
+    let tokens = tokenize(input)
+        .with_context(|| format!("failed to tokenize '{}'", path.display()))?;
 
     println!("Tokens:");
     println!("-------");
     for token in &tokens {
-        println!("{}:{}:{} {:?} {}",
+        println!(
+            "{}:{}:{} {:?} {}",
             path.display(),
             token.pos.line,
             token.pos.column,
@@ -91,15 +86,18 @@ fn lex_file(path: &PathBuf) -> Result<(), Box<dyn std::error::Error>> {
     Ok(())
 }
 
-fn parse_file(path: &PathBuf) -> Result<(), Box<dyn std::error::Error>> {
-    let input = fs::read_to_string(path)?;
+fn parse_file(path: &PathBuf) -> Result<()> {
+    let input = fs::read_to_string(path)
+        .with_context(|| format!("failed to read file '{}'", path.display()))?;
 
     // Tokenize
-    let tokens = tokenize(input)?;
+    let tokens = tokenize(input)
+        .with_context(|| format!("failed to tokenize '{}'", path.display()))?;
 
     // Parse
     let mut parser = Parser::new(tokens);
-    let program = parser.parse_program()?;
+    let program = parser.parse_program()
+        .with_context(|| format!("failed to parse '{}'", path.display()))?;
 
     // Print AST
     println!("Program AST:");
@@ -108,7 +106,10 @@ fn parse_file(path: &PathBuf) -> Result<(), Box<dyn std::error::Error>> {
     if !program.global_vars.is_empty() {
         println!("Global Variables:");
         for global in &program.global_vars {
-            println!("  {} {} = {:?}", global.var_type, global.name, global.initializer);
+            println!(
+                "  {} {} = {:?}",
+                global.var_type, global.name, global.initializer
+            );
         }
         println!();
     }
@@ -150,30 +151,36 @@ fn parse_file(path: &PathBuf) -> Result<(), Box<dyn std::error::Error>> {
     Ok(())
 }
 
-fn compile_file(path: &PathBuf, output: Option<&std::path::Path>, print: bool) -> Result<(), Box<dyn std::error::Error>> {
-    let input = fs::read_to_string(path)?;
+fn compile_file(path: &PathBuf, output: Option<&std::path::Path>, print: bool) -> Result<()> {
+    let input = fs::read_to_string(path)
+        .with_context(|| format!("failed to read file '{}'", path.display()))?;
 
     // Tokenize
-    let tokens = tokenize(input)?;
+    let tokens = tokenize(input)
+        .with_context(|| format!("failed to tokenize '{}'", path.display()))?;
 
     // Parse
     let mut parser = Parser::new(tokens);
-    let program = parser.parse_program()?;
+    let program = parser.parse_program()
+        .with_context(|| format!("failed to parse '{}'", path.display()))?;
 
     // Generate LLVM IR
-    let context = Context::create();
-    let module_name = path.file_stem()
+    let context = LLVMContext::create();
+    let module_name = path
+        .file_stem()
         .and_then(|s| s.to_str())
         .unwrap_or("module");
 
     let mut codegen = CodeGenerator::new(&context, module_name);
-    codegen.generate(&program)?;
+    codegen.generate(&program)
+        .with_context(|| format!("failed to generate code for '{}'", path.display()))?;
 
     // Output
     let ir = codegen.print_to_string();
 
     if let Some(output_path) = output {
-        codegen.write_to_file(output_path)?;
+        codegen.write_to_file(output_path)
+            .with_context(|| format!("failed to write IR to '{}'", output_path.display()))?;
         if print {
             println!("{ir}");
         } else {

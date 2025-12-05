@@ -1,3 +1,4 @@
+use anyhow::{Context as AnyhowContext, Result as AnyhowResult};
 use inkwell::builder::Builder;
 use inkwell::context::Context;
 use inkwell::module::Module;
@@ -60,7 +61,7 @@ impl<'ctx> CodeGenerator<'ctx> {
     /// Generate LLVM IR from a program
     /// # Errors
     /// Returns `CodegenError` if any of the nested functions fail
-    pub fn generate(&mut self, program: &Program) -> Result<(), CodegenError> {
+    pub fn generate(&mut self, program: &Program) -> AnyhowResult<()> {
         // Generate global string literals first (they might be referenced by globals)
         for (i, s) in program.string_literals.iter().enumerate() {
             self.generate_string_literal(i, s);
@@ -68,18 +69,21 @@ impl<'ctx> CodeGenerator<'ctx> {
 
         // First pass: Declare all functions (for forward references)
         for func in &program.functions {
-            self.declare_function(func)?;
+            self.declare_function(func)
+                .with_context(|| format!("failed to declare function '{}'", func.proto.name))?;
         }
 
         // Generate global variables
         for global in &program.global_vars {
-            self.generate_global_variable(global)?;
+            self.generate_global_variable(global)
+                .with_context(|| format!("failed to generate global variable '{}'", global.name))?;
         }
 
         // Second pass: Generate function bodies
         for func in &program.functions {
             if !func.proto.is_extern {
-                self.generate_function(func)?;
+                self.generate_function(func)
+                    .with_context(|| format!("failed to generate function '{}'", func.proto.name))?;
             }
         }
 
@@ -573,7 +577,8 @@ impl<'ctx> CodeGenerator<'ctx> {
                 // Get the address of the expression
                 match &expr.kind {
                     ExprKind::Variable(name) => {
-                        let var_ptr = self.lookup_variable(name).ok_or_else(|| {
+                        let var_ptr = self.lookup_variable(name)
+                        .ok_or_else(|| {
                             CodegenError::UndefinedVariable(name.clone(), expr.pos)
                         })?;
                         Ok(var_ptr.into())

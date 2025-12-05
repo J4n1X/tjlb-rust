@@ -140,7 +140,7 @@ pub enum TokenKind {
 }
 
 /// Language type representation
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Copy)]
 pub enum TypeBase {
     SInt,   // Signed integer
     UInt,   // Unsigned integer  
@@ -149,7 +149,7 @@ pub enum TypeBase {
 }
 
 /// Complete language type with size and modifiers
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Copy)]
 pub struct LangType {
     pub base: TypeBase,
     pub size_bits: u32,
