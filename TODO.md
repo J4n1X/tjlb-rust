@@ -1,11 +1,12 @@
 # TODOS
 
-| Feature                    | Description                                                                                 | Priority |
-|----------------------------|---------------------------------------------------------------------------------------------|----------|
-| Global Variable Assignment | Handle expressions in the global space such that you can assign them to each other and more | LOW      |
-| Function Pointers          | Come up with a syntax and implement function pointers                                       | MEDIUM   |
-| Structures                 | Implement structs                                                                           | HIGH     |
-| Multi-Pass for constants   | Run a multi-pass over the code to replace constant values with their literals.              | LOW      |
+| Feature                       | Description                                                                                 | Priority |
+|-------------------------------|---------------------------------------------------------------------------------------------|----------|
+| Global Variable Assignment    | Handle expressions in the global space such that you can assign them to each other and more | LOW      |
+| Function Pointers             | Come up with a syntax and implement function pointers                                       | MEDIUM   |
+| Structures                    | Implement structs                                                                           | HIGH     |
+| Multi-Pass for constants      | Run a multi-pass over the code to replace constant values with their literals.              | LOW      |
+| Implicit Casting for Literals | Literals should be implicitly type-cast to the right type.                                  | HIGH     |
 
 ## Done
 
