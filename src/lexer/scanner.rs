@@ -405,7 +405,25 @@ impl Scanner {
         
         // Check for built-in types
         if let Some(mut lang_type) = LangType::langtype_from_str(&text) {
-            // Handle pointer depth
+            // Check for array syntax: type[size]
+            self.skip_inline_whitespace();
+            if self.match_char('[') {
+                // Parse array size
+                self.skip_inline_whitespace();
+                let size_start = self.current;
+                while self.peek().is_some_and(|c| c.is_ascii_digit()) {
+                    self.advance();
+                }
+                let size_str = &self.input[size_start..self.current];
+                if let Ok(size) = size_str.parse::<u32>() {
+                    self.skip_inline_whitespace();
+                    if self.match_char(']') {
+                        lang_type.array_size = Some(size);
+                    }
+                }
+            }
+            
+            // Handle pointer depth (after array syntax if present)
             self.skip_inline_whitespace();
             let mut depth = 0;
             while self.match_char('*') {
@@ -438,6 +456,24 @@ impl Scanner {
 
         if let Some(mut lang_type) = LangType::langtype_from_str(&type_text) {
             lang_type.is_const = true;
+
+            // Check for array syntax: type[size]
+            self.skip_inline_whitespace();
+            if self.match_char('[') {
+                // Parse array size
+                self.skip_inline_whitespace();
+                let size_start = self.current;
+                while self.peek().is_some_and(|c| c.is_ascii_digit()) {
+                    self.advance();
+                }
+                let size_str = &self.input[size_start..self.current];
+                if let Ok(size) = size_str.parse::<u32>() {
+                    self.skip_inline_whitespace();
+                    if self.match_char(']') {
+                        lang_type.array_size = Some(size);
+                    }
+                }
+            }
 
             // Handle pointer depth
             self.skip_inline_whitespace();

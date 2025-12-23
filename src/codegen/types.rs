@@ -1,10 +1,15 @@
 use inkwell::AddressSpace;
 use inkwell::context::Context;
-use inkwell::types::{BasicTypeEnum, IntType, FloatType};
+use inkwell::types::{BasicType, BasicTypeEnum, IntType, FloatType, ArrayType};
 use crate::lexer::{LangType, TypeBase};
 use crate::codegen::CodegenError;
 
 /// Convert a `LangType` to an LLVM type
+/// 
+/// For array types (e.g., `u32[4]`), this returns a pointer type since
+/// array variables decay to pointers. Use `lang_type_to_llvm_array` to get
+/// the actual array type for allocation.
+/// 
 /// # Errors
 /// Returns `CodegenError::TypeError` if the type is invalid
 pub fn lang_type_to_llvm<'ctx>(
@@ -14,6 +19,11 @@ pub fn lang_type_to_llvm<'ctx>(
 
     // If it's a pointer, then we just have to make that, LLVM does not differentiate (anymore)
     if lang_type.pointer_depth > 0 {
+        return Ok(context.ptr_type(AddressSpace::default()).into());
+    }
+
+    // Array types are represented as pointers (they decay to pointers)
+    if lang_type.array_size.is_some() {
         return Ok(context.ptr_type(AddressSpace::default()).into());
     }
 
@@ -98,4 +108,68 @@ pub fn get_float_type(context: &'_ Context, bits: u32) -> Result<FloatType<'_>, 
             crate::lexer::Position::new(0, 0),
         )),
     }
+}
+
+/// Get the element type for a `LangType`
+/// 
+/// This returns the base type without array or pointer modifiers.
+/// For `u32[4]`, this returns `i32`. For `u32*`, this returns `i32`.
+/// For `u32`, this returns `i32`.
+/// 
+/// # Errors
+/// Returns `CodegenError::TypeError` if the type is invalid
+pub fn lang_type_element_to_llvm<'ctx>(
+    context: &'ctx Context,
+    lang_type: &LangType,
+) -> Result<BasicTypeEnum<'ctx>, CodegenError> {
+    // Get the base type without pointer/array modifiers
+    Ok(match lang_type.base {
+        TypeBase::SInt | TypeBase::UInt => match lang_type.size_bits {
+            8 => context.i8_type().into(),
+            16 => context.i16_type().into(),
+            32 => context.i32_type().into(),
+            64 => context.i64_type().into(),
+            _ => {
+                return Err(CodegenError::TypeError(
+                    format!("Invalid integer size: {}", lang_type.size_bits),
+                    crate::lexer::Position::new(0, 0),
+                ))
+            }
+        },
+        TypeBase::SFloat => match lang_type.size_bits {
+            32 => context.f32_type().into(),
+            64 => context.f64_type().into(),
+            _ => {
+                return Err(CodegenError::TypeError(
+                    format!("Invalid float size: {}", lang_type.size_bits),
+                    crate::lexer::Position::new(0, 0),
+                ))
+            }
+        },
+        TypeBase::Void => {
+            return Err(CodegenError::TypeError(
+                "Void type cannot be used as a value type".to_string(),
+                crate::lexer::Position::new(0, 0),
+            ));
+        }
+    })
+}
+
+/// Get the LLVM array type for a preallocated array
+/// 
+/// # Errors
+/// Returns `CodegenError::TypeError` if the type is not an array or is invalid
+pub fn lang_type_to_llvm_array<'ctx>(
+    context: &'ctx Context,
+    lang_type: &LangType,
+) -> Result<ArrayType<'ctx>, CodegenError> {
+    let array_size = lang_type.array_size.ok_or_else(|| {
+        CodegenError::TypeError(
+            "Expected array type".to_string(),
+            crate::lexer::Position::new(0, 0),
+        )
+    })?;
+
+    let element_type = lang_type_element_to_llvm(context, lang_type)?;
+    Ok(element_type.array_type(array_size))
 }

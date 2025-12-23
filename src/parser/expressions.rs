@@ -180,7 +180,7 @@ impl Parser {
 
     /// Parse multiplicative expressions (*, /, %)
     fn parse_multiplicative(&mut self) -> Result<Expression, ParserError> {
-        self.parse_binary_expr(Self::parse_cast, &[TokenKind::Asterisk, TokenKind::Slash, TokenKind::Percent])
+        self.parse_binary_expr(Self::parse_other, &[TokenKind::Asterisk, TokenKind::Slash, TokenKind::Percent])
     }
 
     /// Generic binary expression parser
@@ -229,6 +229,12 @@ impl Parser {
             TokenKind::RightShift => Ok(BinaryOp::RightShift),
             _ => Err(ParserError::InvalidBinaryOperation(self.peek().pos)),
         }
+    }
+
+    // TODO: This needs a better name (and it should be written better)
+    fn parse_other(&mut self) -> Result<Expression, ParserError> {
+        self.parse_alloc()
+            .or_else(|_| self.parse_cast())
     }
 
     /// Parse cast expressions (expr as type)
@@ -504,7 +510,13 @@ impl Parser {
                 // For now, return a placeholder type - will be resolved in postfix parsing
                 // if this is a function call, or should exist as a variable otherwise
                 let expr_type = if let Some(var_symbol) = self.symbol_table.lookup_variable(&name) {
-                    var_symbol.symbol_type
+                    // Array-to-pointer decay: when an array variable is used in an expression,
+                    // it decays to a pointer to its first element
+                    if var_symbol.symbol_type.is_array() {
+                        var_symbol.symbol_type.decay_to_pointer()
+                    } else {
+                        var_symbol.symbol_type
+                    }
                 } else {
                     // Might be a function name, use void as placeholder
                     LangType::new(TypeBase::Void, 0, 0, false)
@@ -529,7 +541,7 @@ impl Parser {
         }
     }
 
-    /// Parse a type
+    /// Parse a type (including array types like u32[4])
     pub(crate) fn parse_type(&mut self) -> Result<LangType, ParserError> {
         let kind = self.peek().kind.clone();
         match kind {
@@ -539,6 +551,39 @@ impl Parser {
             }
             _ => Err(ParserError::ExpectedToken(
                 "type".to_string(),
+                format!("{}", self.peek().kind),
+                self.peek().pos,
+            )),
+        }
+    }
+
+    // NOTE: parse_alloc is kept for backward compatibility with dynamic allocations
+    // For preallocated arrays, use the type[size] syntax in variable declarations
+    pub(crate) fn parse_alloc(&mut self) -> Result<Expression, ParserError> {
+        let pos = self.peek().pos;
+        match self.peek().kind {
+            TokenKind::LangType(alloc_type) => {
+                self.advance();
+                self.expect(&TokenKind::OpenBracket, "[")?;
+                let count_expr = self.parse_expression()?;
+                self.expect(&TokenKind::CloseBracket, "]")?;
+                Ok(Expression::new(
+                    ExprKind::Alloc {
+                        alloc_type,
+                        count: Box::new(count_expr),
+                    },
+                    LangType {
+                        base: alloc_type.base,
+                        size_bits: alloc_type.size_bits,
+                        pointer_depth: alloc_type.pointer_depth + 1,
+                        is_const: alloc_type.is_const,
+                        array_size: None,
+                    },
+                    pos,
+                ))
+            }
+            _ => Err(ParserError::ExpectedToken(
+                "type for allocation".to_string(),
                 format!("{}", self.peek().kind),
                 self.peek().pos,
             )),

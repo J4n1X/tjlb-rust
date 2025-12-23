@@ -76,6 +76,10 @@ pub enum ExprKind {
         expr: Box<Expression>,
         target_type: LangType,
     },
+    Alloc {
+        alloc_type: LangType,
+        count: Box<Expression>
+    }
 }
 
 /// Expression with type information

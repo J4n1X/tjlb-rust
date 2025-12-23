@@ -4,11 +4,8 @@ It was written to test external function accessibility, pointer arithmetic
 and general function calling flow.
 -#
 
-const u64 STDIN = 0
-const u64 BUFSIZ = 1024
+const i32 STDIN = 0
 
-extern fn malloc(u64 size) -> u8*
-extern fn free(u8 *mem) -> u0
 extern fn puts(u8 *str) -> u0
 extern fn read(i32 fd, u8* buf, u64 size) -> i64
 
@@ -43,25 +40,19 @@ fn main(i32 argc, i8** argv) -> i32 {
   const u8 *question = "What is your name?"
   const u8 *prefix = "Hello, "
 
-  u8 *input_buffer = malloc(BUFSIZ)
-  memset(input_buffer, BUFSIZ, 0 as u8)
-  if(input_buffer as i32 == 0) {
-    puts("Failed to allocate input buffer!")
-    return -1
-  }
+  u8[1024] input_buffer
+  memset(&input_buffer as u8*, 1024 as u64, 0 as u8)
 
   puts(question)
   
-  i64 read_len = read(STDIN, input_buffer, BUFSIZ)
+  i64 read_len = read(STDIN, &input_buffer as u8*, 1024 as u64)
   input_buffer[read_len - 1 as i64] = 0 as u8
   
-  u8 *response_buffer = malloc(BUFSIZ)
-  memset(response_buffer, BUFSIZ, 0 as u8)
+  u8[1024] response_buffer
+  memset(response_buffer, 1024 as u64, 0 as u8)
   strcat(response_buffer, prefix)
-  strcat(response_buffer, input_buffer)
-  free(input_buffer)
+  strcat(response_buffer, &input_buffer as u8*)
   puts(response_buffer)
-  free(response_buffer)
 
   return 0 as i32
 }

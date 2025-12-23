@@ -1,27 +1,31 @@
 use anyhow::{Context as AnyhowContext, Result as AnyhowResult};
 use inkwell::builder::Builder;
 use inkwell::context::Context;
+use inkwell::passes::PassBuilderOptions;
+use inkwell::targets::{CodeModel, RelocMode, Target, TargetMachine};
 use inkwell::module::Module;
 use inkwell::types::{BasicType, BasicTypeEnum};
 use inkwell::values::{
     BasicValueEnum, FunctionValue, IntValue, PointerValue,
 };
-use inkwell::AddressSpace;
+use inkwell::{AddressSpace, OptimizationLevel};
 use inkwell::IntPredicate;
 use std::collections::HashMap;
 
-use crate::codegen::{is_void_type, lang_type_to_llvm, CodegenError};
+use crate::codegen::{is_void_type, lang_type_to_llvm, lang_type_to_llvm_array, CodegenError};
 use crate::lexer::TypeBase;
 use crate::parser::{
     BinaryOp, ComparisonOp, ExprKind, Expression, Function, GlobalVar, LiteralValue, Program,
     Statement, StatementKind,
 };
 use crate::parser::LangType;
+use std::collections::HashSet;
 
 pub struct CodeGenerator<'ctx> {
     context: &'ctx Context,
     module: Module<'ctx>,
     builder: Builder<'ctx>,
+    target: Target,
 
     // Track function declarations
     functions: HashMap<String, FunctionValue<'ctx>>,
@@ -33,27 +37,52 @@ pub struct CodeGenerator<'ctx> {
     // Track variable types for implicit casting
     variable_types: Vec<HashMap<String, BasicTypeEnum<'ctx>>>,
 
+    // Track which variables are arrays (for array-to-pointer decay)
+    array_variables: HashSet<String>,
+
     // Track global variables
     global_variables: HashMap<String, PointerValue<'ctx>>,
+
+    // Track global variable types for implicit casting
+    global_variable_types: HashMap<String, BasicTypeEnum<'ctx>>,
+
+    // Track which global variables are arrays
+    global_array_variables: HashSet<String>,
 
     // Current function being generated
     current_function: Option<FunctionValue<'ctx>>,
 }
 
 impl<'ctx> CodeGenerator<'ctx> {
+    /// Creates a new `CodeGenerator` with the given LLVM context and module name.
+    ///
+    /// # Panics
+    ///
+    /// Panics if the default target triple cannot be resolved to a valid target.
     #[must_use]
     pub fn new(context: &'ctx Context, module_name: &str) -> Self {
         let module = context.create_module(module_name);
         let builder = context.create_builder();
+        
+        // Initialize target
+        Target::initialize_native(&Default::default()).expect("Failed to initialize native target");
+
+        // TODO: Make target configurable
+        let target = Target::from_triple(&TargetMachine::get_default_triple())
+            .expect("Failed to get target from triple");
 
         Self {
             context,
             module,
             builder,
+            target,
             functions: HashMap::new(),
             variables: vec![HashMap::new()], // Start with global scope
             variable_types: vec![HashMap::new()], // Start with global scope
+            array_variables: HashSet::new(),
             global_variables: HashMap::new(),
+            global_variable_types: HashMap::new(),
+            global_array_variables: HashSet::new(),
             current_function: None,
         }
     }
@@ -61,6 +90,8 @@ impl<'ctx> CodeGenerator<'ctx> {
     /// Generate LLVM IR from a program
     /// # Errors
     /// Returns `CodegenError` if any of the nested functions fail
+    /// # Panics
+    /// Panics if target machine creation fails, which should not happen with valid targets
     pub fn generate(&mut self, program: &Program) -> AnyhowResult<()> {
         // Generate global string literals first (they might be referenced by globals)
         for (i, s) in program.string_literals.iter().enumerate() {
@@ -86,7 +117,6 @@ impl<'ctx> CodeGenerator<'ctx> {
                     .with_context(|| format!("failed to generate function '{}'", func.proto.name))?;
             }
         }
-
         Ok(())
     }
 
@@ -132,6 +162,45 @@ impl<'ctx> CodeGenerator<'ctx> {
         Ok(function)
     }
 
+    /// Collect all variable declarations from a list of statements (recursive)
+    /// Returns a vector of (name, type) pairs for all variables that need to be allocated
+    fn collect_variable_declarations(statements: &[Statement]) -> Vec<(String, LangType)> {
+        let mut vars = Vec::new();
+        
+        for stmt in statements {
+            match &stmt.kind {
+                StatementKind::VarDecl { var_type, name, .. } => {
+                    vars.push((name.clone(), *var_type));
+                }
+                StatementKind::Block(inner_stmts) => {
+                    vars.extend(Self::collect_variable_declarations(inner_stmts));
+                }
+                StatementKind::If { then_block, else_block, .. } => {
+                    vars.extend(Self::collect_variable_declarations(then_block));
+                    if let Some(else_stmts) = else_block {
+                        vars.extend(Self::collect_variable_declarations(else_stmts));
+                    }
+                }
+                StatementKind::While { body, .. } => {
+                    vars.extend(Self::collect_variable_declarations(body));
+                }
+                StatementKind::For { init, body, .. } => {
+                    // Check if init is a VarDecl
+                    if let Some(init_stmt) = init {
+                        if let StatementKind::VarDecl { var_type, name, .. } = &init_stmt.kind {
+                            vars.push((name.clone(), *var_type));
+                        }
+                    }
+                    vars.extend(Self::collect_variable_declarations(body));
+                }
+                // Other statement kinds don't contain variable declarations
+                _ => {}
+            }
+        }
+        
+        vars
+    }
+
     /// Generate a function with its body
     fn generate_function(&mut self, func: &Function) -> Result<(), CodegenError> {
         let function = *self.functions.get(&func.proto.name).ok_or_else(|| {
@@ -167,6 +236,37 @@ impl<'ctx> CodeGenerator<'ctx> {
             self.add_variable(param_name.clone(), alloca, param_llvm_type);
         }
 
+        // Clear array variables tracking for this function
+        self.array_variables.clear();
+
+        // Pre-allocate ALL local variables at entry block
+        // This is required by LLVM for proper optimization (mem2reg pass)
+        let local_vars = Self::collect_variable_declarations(&func.body);
+        for (var_name, var_type) in &local_vars {
+            let llvm_type = if var_type.is_array() {
+                // For array types, allocate the actual array
+                // Track that this variable is an array
+                self.array_variables.insert(var_name.clone());
+                lang_type_to_llvm_array(self.context, var_type)?.into()
+            } else {
+                lang_type_to_llvm(self.context, var_type)?
+            };
+            
+            let alloca = self
+                .builder
+                .build_alloca(llvm_type, var_name)
+                ?;
+            
+            // For array types, store the decayed pointer type in the variable map
+            let stored_type = if var_type.is_array() {
+                self.context.ptr_type(AddressSpace::default()).into()
+            } else {
+                llvm_type
+            };
+            
+            self.add_variable(var_name.clone(), alloca, stored_type);
+        }
+
         // Generate function body
         for stmt in &func.body {
             self.generate_statement(stmt)?;
@@ -196,7 +296,12 @@ impl<'ctx> CodeGenerator<'ctx> {
 
     /// Generate a global variable
     fn generate_global_variable(&mut self, global: &GlobalVar) -> Result<(), CodegenError> {
-        let global_type = lang_type_to_llvm(self.context, &global.var_type)?;
+        // Check if this is an array type
+        let (global_type, is_array) = if global.var_type.is_array() {
+            (lang_type_to_llvm_array(self.context, &global.var_type)?.into(), true)
+        } else {
+            (lang_type_to_llvm(self.context, &global.var_type)?, false)
+        };
 
         let global_var =
             self.module
@@ -206,6 +311,9 @@ impl<'ctx> CodeGenerator<'ctx> {
         if let Some(init_expr) = &global.initializer {
             // For now, global initializers must be constants
             // This is a simplification - LLVM requires constant expressions for globals
+
+            // TODO: Handle non-constant initializers via a "preamble"
+            //       which is called before main to set up globals
             let init_value = self.generate_constant_expression(init_expr)?;
             global_var.set_initializer(&init_value);
         } else {
@@ -213,8 +321,15 @@ impl<'ctx> CodeGenerator<'ctx> {
             global_var.set_initializer(&global_type.const_zero());
         }
 
+        // Track array variables for array-to-pointer decay
+        if is_array {
+            self.global_array_variables.insert(global.name.clone());
+        }
+
         self.global_variables
             .insert(global.name.clone(), global_var.as_pointer_value());
+        self.global_variable_types
+            .insert(global.name.clone(), global_type);
         Ok(())
     }
 
@@ -254,13 +369,19 @@ impl<'ctx> CodeGenerator<'ctx> {
             StatementKind::VarDecl {
                 var_type, name, initializer,
             } => {
-                let llvm_type = lang_type_to_llvm(self.context, var_type)?;
-
-                // Allocate stack space with proper alignment
+                // Variables are pre-allocated at the entry block, just look up and initialize
                 let alloca = self
-                    .builder
-                    .build_alloca(llvm_type, name)
-                    ?;
+                    .lookup_variable(name)
+                    .ok_or_else(|| CodegenError::UndefinedVariable(name.clone(), stmt.pos))?;
+
+                // For array types, they're already zero-initialized and don't need an initializer
+                if var_type.is_array() {
+                    // Arrays are already allocated and zero-initialized
+                    // If there's an initializer, it would be an initializer list (not yet supported)
+                    return Ok(());
+                }
+
+                let llvm_type = lang_type_to_llvm(self.context, var_type)?;
 
                 // Initialize if provided
                 if let Some(init_expr) = initializer {
@@ -282,7 +403,6 @@ impl<'ctx> CodeGenerator<'ctx> {
                         ?;
                 }
 
-                self.add_variable(name.clone(), alloca, llvm_type);
                 Ok(())
             }
 
@@ -562,6 +682,13 @@ impl<'ctx> CodeGenerator<'ctx> {
                     .lookup_variable(name)
                     .ok_or_else(|| CodegenError::UndefinedVariable(name.clone(), expr.pos))?;
 
+                // Check if this is an array variable - if so, return the pointer directly
+                // (array-to-pointer decay)
+                if self.array_variables.contains(name) || self.global_array_variables.contains(name) {
+                    // For arrays, the alloca pointer IS the pointer to the first element
+                    return Ok(var_ptr.into());
+                }
+
                 let var_type = lang_type_to_llvm(self.context, &expr.expr_type)?;
 
                 Ok(self.builder
@@ -608,6 +735,7 @@ impl<'ctx> CodeGenerator<'ctx> {
                         size_bits: inner_expr.expr_type.size_bits,
                         pointer_depth: inner_expr.expr_type.pointer_depth - 1,
                         is_const: inner_expr.expr_type.is_const,
+                        array_size: None,
                     }
                 };
                 let pointee_type = lang_type_to_llvm(self.context, &derefed_type)?;
@@ -620,6 +748,9 @@ impl<'ctx> CodeGenerator<'ctx> {
             }
 
             ExprKind::Cast { expr, target_type } => self.generate_cast(expr, target_type),
+            ExprKind::Alloc { alloc_type, count } => {
+                self.generate_alloc(alloc_type, count)
+            }
         }
     }
 
@@ -794,6 +925,7 @@ impl<'ctx> CodeGenerator<'ctx> {
             size_bits: left.expr_type.size_bits,
             pointer_depth: left.expr_type.pointer_depth - 1,
             is_const: left.expr_type.is_const,
+            array_size: None,
         })?;
         
         match op {
@@ -1115,11 +1247,12 @@ impl<'ctx> CodeGenerator<'ctx> {
 
     /// Generate a constant expression (for global initializers)
     fn generate_constant_expression(
-        &self,
+        &mut self,
         expr: &Expression,
     ) -> Result<BasicValueEnum<'ctx>, CodegenError> {
         match &expr.kind {
             ExprKind::Literal(lit) => self.generate_constant_literal(lit, &expr.expr_type),
+            ExprKind::Alloc { alloc_type: lang_type, count } => self.generate_alloc(lang_type, count),
             _ => Err(CodegenError::InvalidOperation(
                 "Non-constant expression in global initializer".to_string(),
                 expr.pos,
@@ -1250,7 +1383,8 @@ impl<'ctx> CodeGenerator<'ctx> {
                 return Some(*ty);
             }
         }
-        None
+        // Check globals
+        self.global_variable_types.get(name).copied()
     }
 
     /// Get the LLVM module
@@ -1258,8 +1392,73 @@ impl<'ctx> CodeGenerator<'ctx> {
         &self.module
     }
 
+    /// Get a target machine for the current platform
+    /// 
+    /// # Errors
+    /// Returns `CodegenError` if the target machine cannot be created
+    /// 
+    /// # Panics
+    /// Panics if target machine creation fails unexpectedly
+    pub fn get_target_machine(&self) -> Result<TargetMachine, CodegenError> {
+        let opt = OptimizationLevel::Default;
+        let reloc = RelocMode::Default;
+        let model = CodeModel::Default;
+        let target_machine = self
+            .target
+            .create_target_machine(
+                &TargetMachine::get_default_triple(),
+                "generic",
+                "",
+                opt,
+                reloc,
+                model,
+            )
+            .context("failed to create target machine").unwrap();
+        Ok(target_machine)
+    }
+
+    /// Run optimization passes on the module
+    /// 
+    /// # Arguments
+    /// * `level` - Optimization level (0-3), where:
+    ///   - 0: No optimizations (default)
+    ///   - 1: Basic optimizations
+    ///   - 2: Standard optimizations (recommended for release)
+    ///   - 3: Aggressive optimizations
+    /// 
+    /// # Errors
+    /// Returns `CodegenError` if the passes fail to run
+    pub fn optimize(&self, level: u8) -> Result<(), CodegenError> {
+        if level == 0 {
+            return Ok(());
+        }
+
+        let target_machine = self.get_target_machine()?;
+        
+        // Build the pass pipeline string based on optimization level
+        let passes = match level {
+            1 => "default<O1>",
+            3 => "default<O3>",
+            _ => "default<O2>", // 2 or any other value defaults to O2
+        };
+
+        let pass_options = PassBuilderOptions::create();
+        pass_options.set_verify_each(true);
+        pass_options.set_loop_interleaving(true);
+        pass_options.set_loop_vectorization(true);
+        pass_options.set_loop_unrolling(true);
+        pass_options.set_merge_functions(true);
+
+        self.module
+            .run_passes(passes, &target_machine, pass_options)
+            .map_err(|e| CodegenError::InvalidOperation(
+                format!("Failed to run optimization passes: {}", e.to_string()),
+                crate::lexer::Position { line: 0, column: 0 },
+            ))
+    }
+
     /// Print the LLVM IR to a string
-    pub fn print_to_string(&self) -> String {
+    pub fn print_ir_to_string(&self) -> String {
         self.module.print_to_string().to_string()
     }
 
@@ -1268,9 +1467,47 @@ impl<'ctx> CodeGenerator<'ctx> {
     /// When writing to the file fails
     /// # Errors
     /// Never
-    pub fn write_to_file(&self, path: &std::path::Path) -> Result<(), CodegenError> {
+    pub fn write_ir_to_file(&self, path: &std::path::Path) -> Result<(), CodegenError> {
         self.module
             .print_to_file(path).expect("Failed to write LLVM IR to file");
         Ok(())
     }
+    
+fn generate_alloc(&mut self, alloc_type: &LangType, count: &Expression) -> Result<BasicValueEnum<'ctx>, CodegenError> {
+    if self.current_function.is_none() {
+        // --- GLOBAL ALLOCATION ---
+        match count.kind {
+            ExprKind::Literal(LiteralValue::Integer(val)) => {
+                let llvm_type = lang_type_to_llvm(self.context, alloc_type)?;
+                
+                // Safety check for size
+                let array_size = u32::try_from(val).map_err(|_| CodegenError::InvalidOperation(
+                    "Global allocation size too large.".to_string(),
+                    count.pos,
+                ))?;
+
+                // For globals, we MUST create an ArrayType because globals are not dynamic.
+                // e.g., [4 x i32]
+                let array_type = llvm_type.array_type(array_size);
+                
+                let global = self.module.add_global(array_type, None, ".global_alloc");
+                global.set_initializer(&array_type.const_zero());
+                
+                Ok(global.as_pointer_value().into())
+            }
+            _ => Err(CodegenError::InvalidOperation(
+                "Global allocation count must be a constant integer".to_string(),
+                count.pos,
+            ))
+        }
+    } else {
+        let count_value = self.generate_expression(count)?;
+        let count_int = count_value.into_int_value();
+        let llvm_type = lang_type_to_llvm(self.context, alloc_type)?;
+        let alloca = self.builder.build_array_alloca(llvm_type, count_int, "alloca")
+            .map_err(|_| CodegenError::InvalidOperation("Failed to build alloca".to_string(), count.pos))?;
+        
+        Ok(alloca.into())
+    }
+}
 }

@@ -42,6 +42,10 @@ enum Commands {
         /// Print IR to stdout even when writing to file
         #[arg(short, long)]
         print: bool,
+
+        /// Optimization level (0-3)
+        #[arg(short = 'O', long = "optimize", value_name = "LEVEL", default_value = "0")]
+        opt_level: u8,
     },
 }
 
@@ -55,7 +59,8 @@ fn main() -> Result<()> {
             file,
             output,
             print,
-        } => compile_file(&file, output.as_deref(), print)?,
+            opt_level,
+        } => compile_file(&file, output.as_deref(), print, opt_level)?,
     }
 
     Ok(())
@@ -151,7 +156,7 @@ fn parse_file(path: &PathBuf) -> Result<()> {
     Ok(())
 }
 
-fn compile_file(path: &PathBuf, output: Option<&std::path::Path>, print: bool) -> Result<()> {
+fn compile_file(path: &PathBuf, output: Option<&std::path::Path>, print: bool, opt_level: u8) -> Result<()> {
     let input = fs::read_to_string(path)
         .with_context(|| format!("failed to read file '{}'", path.display()))?;
 
@@ -175,11 +180,17 @@ fn compile_file(path: &PathBuf, output: Option<&std::path::Path>, print: bool) -
     codegen.generate(&program)
         .with_context(|| format!("failed to generate code for '{}'", path.display()))?;
 
+    // Run optimization passes
+    if opt_level > 0 {
+        codegen.optimize(opt_level)
+            .with_context(|| format!("failed to optimize code for '{}'", path.display()))?;
+    }
+
     // Output
-    let ir = codegen.print_to_string();
+    let ir = codegen.print_ir_to_string();
 
     if let Some(output_path) = output {
-        codegen.write_to_file(output_path)
+        codegen.write_ir_to_file(output_path)
             .with_context(|| format!("failed to write IR to '{}'", output_path.display()))?;
         if print {
             println!("{ir}");

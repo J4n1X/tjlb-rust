@@ -46,7 +46,7 @@ fn compile_and_run_with_args(source_path: &str, args: &[String]) -> Result<i32, 
     let ir_file = NamedTempFile::new()
         .map_err(|e| format!("Failed to create temp file: {e}"))?;
 
-    codegen.write_to_file(ir_file.path())
+    codegen.write_ir_to_file(ir_file.path())
         .map_err(|e| format!("Failed to write IR: {e}"))?;
 
     // Run with lli-19

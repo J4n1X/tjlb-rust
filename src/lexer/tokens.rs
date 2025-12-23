@@ -155,6 +155,8 @@ pub struct LangType {
     pub size_bits: u32,
     pub pointer_depth: u32,
     pub is_const: bool,
+    /// For preallocated arrays: the number of elements. None for non-array types.
+    pub array_size: Option<u32>,
 }
 
 impl LangType {
@@ -165,6 +167,7 @@ impl LangType {
             size_bits,
             pointer_depth,
             is_const,
+            array_size: None,
         }
     }
     
@@ -204,6 +207,43 @@ impl LangType {
         self.pointer_depth = depth;
         self
     }
+
+    /// Set the array size for preallocated arrays
+    #[must_use]
+    pub fn with_array_size(mut self, size: u32) -> Self {
+        self.array_size = Some(size);
+        self
+    }
+
+    /// Check if this type is a preallocated array
+    #[must_use]
+    pub fn is_array(&self) -> bool {
+        self.array_size.is_some()
+    }
+
+    /// Get the element type (removes `array_size`, used for array-to-pointer decay)
+    #[must_use]
+    pub fn element_type(&self) -> Self {
+        Self {
+            base: self.base,
+            size_bits: self.size_bits,
+            pointer_depth: self.pointer_depth,
+            is_const: self.is_const,
+            array_size: None,
+        }
+    }
+
+    /// Get the pointer type that this array decays to
+    #[must_use]
+    pub fn decay_to_pointer(&self) -> Self {
+        Self {
+            base: self.base,
+            size_bits: self.size_bits,
+            pointer_depth: self.pointer_depth + 1,
+            is_const: self.is_const,
+            array_size: None,
+        }
+    }
 }
 
 impl fmt::Display for LangType {
@@ -216,7 +256,10 @@ impl fmt::Display for LangType {
         };
         let asterisks = "*".repeat(self.pointer_depth as usize);
         
-        if self.pointer_depth > 0 {
+        // Handle array types
+        if let Some(size) = self.array_size {
+            write!(f, "{}{}{}[{}]{}", const_str, base_str, self.size_bits, size, asterisks)
+        } else if self.pointer_depth > 0 {
             write!(f, "{}{}{}{}", const_str, base_str, self.size_bits, asterisks)
         } else {
             write!(f, "{}{}{}", const_str, base_str, self.size_bits)
