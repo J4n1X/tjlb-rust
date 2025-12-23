@@ -236,6 +236,7 @@ impl<'ctx> CodeGenerator<'ctx> {
     }
 
     /// Generate code for a statement
+    #[allow(clippy::too_many_lines)]
     fn generate_statement(&mut self, stmt: &Statement) -> Result<(), CodegenError> {
         match &stmt.kind {
             StatementKind::Expression(expr) => {
@@ -251,9 +252,7 @@ impl<'ctx> CodeGenerator<'ctx> {
             }
 
             StatementKind::VarDecl {
-                var_type,
-                name,
-                initializer,
+                var_type, name, initializer,
             } => {
                 let llvm_type = lang_type_to_llvm(self.context, var_type)?;
 
@@ -605,7 +604,7 @@ impl<'ctx> CodeGenerator<'ctx> {
                     ));
                 } else {
                     LangType {
-                        base: inner_expr.expr_type.base.clone(),
+                        base: inner_expr.expr_type.base,
                         size_bits: inner_expr.expr_type.size_bits,
                         pointer_depth: inner_expr.expr_type.pointer_depth - 1,
                         is_const: inner_expr.expr_type.is_const,
@@ -791,7 +790,7 @@ impl<'ctx> CodeGenerator<'ctx> {
         let left_ptr = self.generate_expression(left)?.into_pointer_value();
         let right_int = self.generate_expression(right)?.into_int_value();
         let pointee_type = lang_type_to_llvm(self.context, &LangType {
-            base: left.expr_type.base.clone(),
+            base: left.expr_type.base,
             size_bits: left.expr_type.size_bits,
             pointer_depth: left.expr_type.pointer_depth - 1,
             is_const: left.expr_type.is_const,
@@ -1084,25 +1083,29 @@ impl<'ctx> CodeGenerator<'ctx> {
             let target_bits = target_int_type.get_bit_width();
             let is_signed = matches!(source_lang_type.base, TypeBase::SInt);
 
-            return if target_bits > source_bits {
-                // Extend
-                Ok(if is_signed {
-                    self.builder
-                        .build_int_s_extend(int_val, target_int_type, "sext")
-                        .map(Into::into)?
-                } else {
-                    self.builder
-                        .build_int_z_extend(int_val, target_int_type, "zext")
-                        .map(Into::into)?
-                })
-            } else if target_bits < source_bits {
-                // Truncate
-                Ok(self.builder
-                    .build_int_truncate(int_val, target_int_type, "trunc")
-                    .map(Into::into)?)
-            } else {
-                // Same size, no cast needed
-                Ok(value)
+            return match target_bits.cmp(&source_bits) {
+                std::cmp::Ordering::Greater => {
+                    // Extend
+                    Ok(if is_signed {
+                        self.builder
+                            .build_int_s_extend(int_val, target_int_type, "sext")
+                            .map(Into::into)?
+                    } else {
+                        self.builder
+                            .build_int_z_extend(int_val, target_int_type, "zext")
+                            .map(Into::into)?
+                    })
+                }
+                std::cmp::Ordering::Less => {
+                    // Truncate
+                    Ok(self.builder
+                        .build_int_truncate(int_val, target_int_type, "trunc")
+                        .map(Into::into)?)
+                }
+                std::cmp::Ordering::Equal => {
+                    // Same size, no cast needed
+                    Ok(value)
+                }
             };
         }
 

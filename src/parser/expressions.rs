@@ -198,7 +198,7 @@ impl Parser {
             let pos = left.pos;
 
             // For now, use left's type as result type (proper type checking would go here)
-            let result_type = left.expr_type.clone();
+            let result_type = left.expr_type;
 
             left = Expression::new(
                 ExprKind::Binary {
@@ -244,7 +244,7 @@ impl Parser {
             expr = Expression::new(
                 ExprKind::Cast {
                     expr: Box::new(expr),
-                    target_type: target_type.clone(),
+                    target_type,
                 },
                 target_type,
                 pos,
@@ -264,7 +264,7 @@ impl Parser {
                 let expr = self.parse_unary()?;
 
                 // Taking address increases pointer depth
-                let mut result_type = expr.expr_type.clone();
+                let mut result_type = expr.expr_type;
                 result_type.pointer_depth += 1;
 
                 Ok(Expression::new(
@@ -282,7 +282,7 @@ impl Parser {
                     return Err(ParserError::InvalidDereference(pos));
                 }
 
-                let mut result_type = expr.expr_type.clone();
+                let mut result_type = expr.expr_type;
                 result_type.pointer_depth -= 1;
 
                 Ok(Expression::new(
@@ -295,12 +295,12 @@ impl Parser {
                 self.advance();
                 let expr = self.parse_unary()?;
                 let zero_pos = pos;
-                let result_type = expr.expr_type.clone();
+                let result_type = expr.expr_type;
 
                 // Unary minus as 0 - expr
                 let zero = Expression::new(
                     ExprKind::Literal(LiteralValue::Integer(0)),
-                    result_type.clone(),
+                    result_type,
                     zero_pos,
                 );
 
@@ -323,7 +323,7 @@ impl Parser {
                 let result_type = LangType::new(TypeBase::SInt, 32, 0, false);
                 let zero = Expression::new(
                     ExprKind::Literal(LiteralValue::Integer(0)),
-                    result_type.clone(),
+                    result_type,
                     zero_pos,
                 );
 
@@ -376,7 +376,7 @@ impl Parser {
         let func_symbol = self.symbol_table.lookup_function(&func_name)
             .ok_or_else(|| ParserError::UndefinedFunction(func_name.clone(), pos))?;
 
-        let return_type = func_symbol.return_type.clone();
+        let return_type = func_symbol.return_type;
 
         // Parse arguments
         let mut args = Vec::new();
@@ -412,7 +412,7 @@ impl Parser {
         // Make sure the index_expr is an integer type
         if matches!(index_expr.expr_type.base, TypeBase::SInt | TypeBase::UInt) {
             let return_type = {
-                let mut t = array_expr.expr_type.clone();
+                let mut t = array_expr.expr_type;
                 if t.pointer_depth > 0 {
                     t.pointer_depth -= 1;
                 }
@@ -425,7 +425,7 @@ impl Parser {
                     op: BinaryOp::Add,
                     right: Box::new(index_expr),
                 },
-                array_expr.expr_type.clone(),
+                array_expr.expr_type,
                 pos,
             );
             Ok(Expression::new(
@@ -504,7 +504,7 @@ impl Parser {
                 // For now, return a placeholder type - will be resolved in postfix parsing
                 // if this is a function call, or should exist as a variable otherwise
                 let expr_type = if let Some(var_symbol) = self.symbol_table.lookup_variable(&name) {
-                    var_symbol.symbol_type.clone()
+                    var_symbol.symbol_type
                 } else {
                     // Might be a function name, use void as placeholder
                     LangType::new(TypeBase::Void, 0, 0, false)
@@ -531,9 +531,9 @@ impl Parser {
 
     /// Parse a type
     pub(crate) fn parse_type(&mut self) -> Result<LangType, ParserError> {
-        match &self.peek().kind {
+        let kind = self.peek().kind.clone();
+        match kind {
             TokenKind::LangType(lang_type) => {
-                let lang_type = lang_type.clone();
                 self.advance();
                 Ok(lang_type)
             }
@@ -666,7 +666,7 @@ impl Parser {
         let proto = FunctionProto {
             name: name.clone(),
             params: params.clone(),
-            return_type: return_type.clone(),
+            return_type,
             is_extern,
             pos,
         };
@@ -675,7 +675,7 @@ impl Parser {
         let func_symbol = FunctionSymbol {
             name: name.clone(),
             params: params.clone(),
-            return_type: return_type.clone(),
+            return_type,
             is_extern,
             has_body: !is_extern,
             pos,
@@ -698,7 +698,7 @@ impl Parser {
 
             for (param_type, param_name) in &params {
                 self.symbol_table_mut()
-                    .add_variable(param_name.clone(), param_type.clone(), pos)
+                    .add_variable(param_name.clone(), *param_type, pos)
                     .map_err(|e| ParserError::UnexpectedToken(e, pos))?;
             }
 
@@ -748,7 +748,7 @@ impl Parser {
 
         // Add global variable to symbol table (at global scope)
         self.symbol_table_mut()
-            .add_variable(name.clone(), var_type.clone(), pos)
+            .add_variable(name.clone(), var_type, pos)
             .map_err(|e| ParserError::UnexpectedToken(e, pos))?;
 
         // Consume optional semicolon or newline

@@ -314,7 +314,7 @@ impl Parser {
 
         // Add variable to symbol table
         self.symbol_table_mut()
-            .add_variable(name.clone(), var_type.clone(), pos)
+            .add_variable(name.clone(), var_type, pos)
             .map_err(|e| ParserError::UnexpectedToken(e, pos))?;
 
         // Consume optional semicolon or newline
@@ -354,8 +354,7 @@ impl Parser {
         let var_type = self.symbol_table()
             .lookup_variable(&name)
             .ok_or_else(|| ParserError::UndefinedVariable(name.clone(), pos))?
-            .symbol_type
-            .clone();
+            .symbol_type;
 
         // Parse assignment operator
         let op_token = self.advance().clone();
@@ -420,7 +419,7 @@ impl Parser {
     ) -> Expression {
         let var_expr = Expression::new(
             crate::parser::ExprKind::Variable(name.to_string()),
-            var_type.clone(),
+            var_type,
             pos,
         );
 
@@ -517,7 +516,7 @@ impl Parser {
 
         // Add variable to symbol table
         self.symbol_table_mut()
-            .add_variable(name.clone(), var_type.clone(), pos)
+            .add_variable(name.clone(), var_type, pos)
             .map_err(|e| ParserError::UnexpectedToken(e, pos))?;
 
         Ok(Statement::new(
@@ -554,8 +553,7 @@ impl Parser {
         let var_type = self.symbol_table()
             .lookup_variable(&name)
             .ok_or_else(|| ParserError::UndefinedVariable(name.clone(), pos))?
-            .symbol_type
-            .clone();
+            .symbol_type;
 
         // Parse assignment operator
         let op_token = self.advance().clone();
